@@ -26,7 +26,69 @@
     #define __builtin_prefetch(addr, rw, locality) ((void)0)
 #endif
 
-// Morton/Z-order curve implementation for spatial sorting
+
+BarnesHutParticleSystem::BarnesHutParticleSystem(size_t max_particles, EventBus& event_bus, const Config& config)
+    : max_particles_(max_particles), particle_count_(0), event_bus_(event_bus),
+      config_(config), iteration_count_(0), current_frame_(0), tree_valid_(false),
+      root_node_index_(UINT32_MAX), next_free_node_(0),
+      bounce_force_(1000.0f), damping_(0.999f), gravity_(0.0, 0.0),
+      bounds_min_x_(-10.0), bounds_max_x_(10.0), bounds_min_y_(-10.0), bounds_max_y_(10.0),
+      morton_ordering_enabled_(true), particles_need_reordering_(false), 
+      last_morton_frame_(UINT32_MAX), indices_filled_(0) {  
+    
+    config_.theta_squared = config_.theta * config_.theta;
+    
+    positions_x_.resize(max_particles);
+    positions_y_.resize(max_particles);
+    velocities_x_.resize(max_particles);
+    velocities_y_.resize(max_particles);
+    forces_x_.resize(max_particles);
+    forces_y_.resize(max_particles);
+    masses_.resize(max_particles);
+    colors_r_.resize(max_particles);
+    colors_g_.resize(max_particles);
+    colors_b_.resize(max_particles);
+    
+    // Morton and tree work buffers 
+    morton_indices_.resize(max_particles_);         
+    tmp_indices_.resize(max_particles_);           
+    morton_keys_.resize(max_particles_);           
+    current_accel_x_.resize(max_particles_);       
+    current_accel_y_.resize(max_particles_);       
+    node_stack_.reserve(4096);                     
+    
+    // Leaf arrays
+    leaf_pos_x_.reserve(max_particles_);
+    leaf_pos_y_.reserve(max_particles_);
+    leaf_mass_.reserve(max_particles_);
+    leaf_idx_.reserve(max_particles_);
+    
+    // Tree nodes and other structures
+    tree_nodes_.reserve(max_particles * 4);
+    previous_positions_.reserve(max_particles);
+    
+    // Rendering arrays
+    render_positions_.resize(max_particles * 2);
+    render_colors_.resize(max_particles * 3);
+    render_positions_x_.resize(max_particles);
+    render_positions_y_.resize(max_particles);
+    render_velocities_x_.resize(max_particles);
+    render_velocities_y_.resize(max_particles);
+    render_masses_.resize(max_particles);
+    
+    std::cout << "BarnesHutParticleSystem initialized with " << max_particles << " max particles\n";
+    
+    #ifdef _OPENMP
+        if (config_.enable_threading) {
+            std::cout << "OpenMP threading enabled with " << omp_get_max_threads() << " threads\n";
+            omp_set_dynamic(0);
+            omp_set_num_threads(8);
+        }
+    #endif
+}
+
+BarnesHutParticleSystem::~BarnesHutParticleSystem() = default;
+
 class MortonCode {
 public:
     // Interleave bits for 2D Morton code (Z-order)
@@ -34,14 +96,8 @@ public:
         return (expand_bits_2d(x) << 1) | expand_bits_2d(y);
     }
     
-    // Decode Morton code back to 2D coordinates  
-    static void decode_morton_2d(uint64_t morton, uint32_t& x, uint32_t& y) {
-        x = compact_bits_2d(morton >> 1);
-        y = compact_bits_2d(morton);
-    }
 
 private:
-    // Expand a 32-bit integer by inserting zeros between bits
     static uint64_t expand_bits_2d(uint32_t v) {
         uint64_t x = v;
         x = (x | (x << 16)) & 0x0000FFFF0000FFFF;
@@ -52,7 +108,6 @@ private:
         return x;
     }
     
-    // Compact bits by removing zeros between them
     static uint32_t compact_bits_2d(uint64_t x) {
         x &= 0x5555555555555555;
         x = (x ^ (x >> 1))  & 0x3333333333333333;
@@ -68,7 +123,14 @@ class MortonEncoder {
 public:
     static uint64_t encode_position(double x, double y, double min_x, double max_x, 
                                    double min_y, double max_y) {
-        // Normalize to [0,1] range
+        /* Normalises [x,y] to [0,1] using current world bounds; clamps degenerate
+           ranges to 1.0 to avoid division by zero
+           Quantises to 21-bit integer coord.
+           Interleaves bits MortonCode to produce a 42-bit Z-order key
+           
+            INPUTS:  x; y; min_x; max_y; min_y; max_y
+            OUTPUS: uint64_t morton_key
+        */
         double range_x = max_x - min_x;
         double range_y = max_y - min_y;
         
@@ -78,7 +140,6 @@ public:
         double norm_x = std::clamp((x - min_x) / range_x, 0.0, 1.0);
         double norm_y = std::clamp((y - min_y) / range_y, 0.0, 1.0);
         
-        // Convert to integer coordinates (21 bits gives good precision)
         const uint32_t max_coord = (1U << 21) - 1;
         uint32_t ix = static_cast<uint32_t>(norm_x * max_coord);
         uint32_t iy = static_cast<uint32_t>(norm_y * max_coord);
@@ -88,26 +149,30 @@ public:
 };
 
 inline void BarnesHutParticleSystem::radix_sort_indices() {
+    /* 
+     * 1. 4-pass LSD Radix sort, O(11N)≈ O(N) over a 11 bit per pass into (2048) buckets
+     * Covers the 42 bit key. For N<2048 it falls back to std::sort 
+     *
+     * INPUTS: morton_keys_; morton_indices_
+     * OUTPUT: morton_indices reordered so that morton_keys_[morton_indices_[i]] is
+     *         non-decreasing
+     * */
     const size_t N = particle_count_;
     if (N == 0) return;
 
-    // Type-safe index type matching your vectors
     using IndexT = typename decltype(morton_indices_)::value_type;
     
-    // Use pre-sized buffers (no resize!)
     IndexT* __restrict out = tmp_indices_.data();       
     IndexT* __restrict in  = morton_indices_.data();     
     const uint64_t* __restrict keys = morton_keys_.data();
 
-    // Fixed radix parameters with compile-time validation
     constexpr int RADIX_BITS = 11;
-    constexpr int KEY_BITS = 42;                    // Morton 2D with 21-bit coordinates
-    constexpr uint32_t RADIX = 1u << RADIX_BITS;   // 2048
+    constexpr int KEY_BITS = 42;                    
+    constexpr uint32_t RADIX = 1u << RADIX_BITS;   
     constexpr uint32_t RADIX_MASK = RADIX - 1;
     constexpr int NUM_PASSES = (KEY_BITS + RADIX_BITS - 1) / RADIX_BITS;  // = 4
     static_assert(NUM_PASSES == 4, "adjust passes for key width");
 
-    // Use member stack histogram (no vector operations!)
     uint32_t* count = radix_histogram_.data();
 
     if (N < 2048) {
@@ -117,16 +182,13 @@ inline void BarnesHutParticleSystem::radix_sort_indices() {
 
     int shift = 0;
     for (int pass = 0; pass < NUM_PASSES; ++pass, shift += RADIX_BITS) {
-        // zero histogram (no assign/resize!)
         std::fill_n(count, RADIX, 0);
 
-        // histogram
         for (size_t i = 0; i < N; ++i) {
             uint32_t bucket = (keys[in[i]] >> shift) & RADIX_MASK;
             ++count[bucket];
         }
 
-        // prefix sum
         uint32_t sum = 0;
         for (uint32_t b = 0; b < RADIX; ++b) {
             uint32_t c = count[b];
@@ -134,7 +196,6 @@ inline void BarnesHutParticleSystem::radix_sort_indices() {
             sum += c;
         }
 
-        // scatter
         for (size_t i = 0; i < N; ++i) {
             IndexT idx = in[i];
             uint32_t bucket = (keys[idx] >> shift) & RADIX_MASK;
@@ -143,9 +204,6 @@ inline void BarnesHutParticleSystem::radix_sort_indices() {
 
         std::swap(in, out);
     }
-
-    // Result is guaranteed to be in morton_indices_ after 4 passes (even number)
-    // No conditional swap needed
 }
 
 
@@ -159,15 +217,18 @@ inline void BarnesHutParticleSystem::ensure_indices_upto(size_t N) {
 }
 
 inline void BarnesHutParticleSystem::sort_by_morton_key() {
+    // 1. Ensures Morton_keys_ has capacity pre-sized to max_particles_
+    // 2. Waterline fills morton_indices_ with [0,(N-1)]  
+    // 3. Computes One Key per Particle with the MortonEncoder::encode_position
+    // 4. Calls Radix Sort
+    //
+    // INPUTS:  positions_x_; positions_y_; particle_count_
+    // OUTPUTS: morton_keys_[0,N) filled; morton_indices_[0,N) sorted by 
+    //
     const size_t N = particle_count_;
-
-    // Ensure morton_keys_ has space (but never resize morton_indices_!)
     if (morton_keys_.size() < N) morton_keys_.resize(max_particles_);
-    
-    // Use waterline system for morton_indices_
     ensure_indices_upto(N);
 
-    // Compute keys (unchanged)
     #ifdef _OPENMP
     if (config_.enable_threading && N > 1000) {
         #pragma omp parallel for
@@ -192,8 +253,17 @@ inline void BarnesHutParticleSystem::sort_by_morton_key() {
 }
 
 std::array<std::pair<size_t, size_t>, 4> BarnesHutParticleSystem::split_morton_range(size_t first, size_t last, int depth) const {
+    /*
+     * 1. Looks at the two bits for that level with the level_shift
+     * 2. Uses mask to bin consecutive indices into 4 contiguous sub-ranges
+     * 3. remaps Z-order nibble into Canonical child order so that 
+     *    the trees children are [SW, SE, NW, NE]
+     * 
+     * INPUT:  first; last; depth
+     * OUTPUT: 4 pairs, {range_first, range_last} into the parents [first, last]
+     * */
     std::array<std::pair<size_t, size_t>, 4> ranges;
-    for (auto& r : ranges) r = {SIZE_MAX, SIZE_MAX}; // Initialize as empty
+    for (auto& r : ranges) r = {SIZE_MAX, SIZE_MAX}; 
     
     if (first > last) return ranges;
     
@@ -202,15 +272,14 @@ std::array<std::pair<size_t, size_t>, 4> BarnesHutParticleSystem::split_morton_r
     static constexpr int z_to_child[4] = {0, 2, 1, 3};
     
     for (size_t i = first; i <= last; ) {
-        // FIXED: Use sorted index instead of direct array access
-        const size_t gi = morton_indices_[i];               // <-- KEY FIX
+        const size_t gi = morton_indices_[i];            
         const uint64_t ki = morton_keys_[gi];
         const int z_quad = int((ki & mask) >> level_shift);
         const int child_slot = z_to_child[z_quad];
         
         size_t j = i + 1;
         while (j <= last) {
-            const size_t gj = morton_indices_[j];           // <-- KEY FIX
+            const size_t gj = morton_indices_[j];         
             const int z2 = int((morton_keys_[gj] & mask) >> level_shift);
             if (z2 != z_quad) break;
             ++j;
@@ -219,7 +288,6 @@ std::array<std::pair<size_t, size_t>, 4> BarnesHutParticleSystem::split_morton_r
         i = j;
     }
     
-    // Debug verification (remove in release)
     #ifndef NDEBUG
     size_t total = 0;
     for (auto [a, b] : ranges) {
@@ -231,83 +299,59 @@ std::array<std::pair<size_t, size_t>, 4> BarnesHutParticleSystem::split_morton_r
     return ranges;
 }
 
-BarnesHutParticleSystem::BarnesHutParticleSystem(size_t max_particles, EventBus& event_bus, const Config& config)
-    : max_particles_(max_particles), particle_count_(0), event_bus_(event_bus),
-      config_(config), iteration_count_(0), current_frame_(0), tree_valid_(false),
-      root_node_index_(UINT32_MAX), next_free_node_(0),
-      bounce_force_(1000.0f), damping_(0.999f), gravity_(0.0, 0.0),
-      bounds_min_x_(-10.0), bounds_max_x_(10.0), bounds_min_y_(-10.0), bounds_max_y_(10.0),
-      morton_ordering_enabled_(true), particles_need_reordering_(false), 
-      last_morton_frame_(UINT32_MAX), indices_filled_(0) {  
+bool BarnesHutParticleSystem::should_apply_morton_ordering() const {
+    if (!particles_need_reordering_) return false;
+   
+    static uint32_t last_morton_frame = 0;
+    const uint32_t morton_interval = 60;  
     
-    // Precompute theta squared for optimization
-    config_.theta_squared = config_.theta * config_.theta;
+    bool enough_particles = particle_count_ >= 100;
+    bool time_to_reorder = (current_frame_ - last_morton_frame) >= morton_interval;
+    bool tree_rebuilding = !tree_valid_ || should_rebuild_tree();
     
-    // Pre-size ALL hot-path work buffers to max capacity ONCE - NO MORE RESIZES!
-    positions_x_.resize(max_particles);
-    positions_y_.resize(max_particles);
-    velocities_x_.resize(max_particles);
-    velocities_y_.resize(max_particles);
-    forces_x_.resize(max_particles);
-    forces_y_.resize(max_particles);
-    masses_.resize(max_particles);
-    colors_r_.resize(max_particles);
-    colors_g_.resize(max_particles);
-    colors_b_.resize(max_particles);
-    
-    // Morton and tree work buffers - never resize again
-    morton_indices_.resize(max_particles_);         
-    tmp_indices_.resize(max_particles_);           
-    morton_keys_.resize(max_particles_);           
-    current_accel_x_.resize(max_particles_);       
-    current_accel_y_.resize(max_particles_);       
-    node_stack_.reserve(4096);                     
-    
-    // Leaf arrays: reserve generously but grow with push_back (no resize)
-    leaf_pos_x_.reserve(max_particles_);
-    leaf_pos_y_.reserve(max_particles_);
-    leaf_mass_.reserve(max_particles_);
-    leaf_idx_.reserve(max_particles_);
-    
-    // Tree nodes and other structures
-    tree_nodes_.reserve(max_particles * 4);
-    previous_positions_.reserve(max_particles);
-    
-    // Rendering arrays
-    render_positions_.resize(max_particles * 2);
-    render_colors_.resize(max_particles * 3);
-    render_positions_x_.resize(max_particles);
-    render_positions_y_.resize(max_particles);
-    render_velocities_x_.resize(max_particles);
-    render_velocities_y_.resize(max_particles);
-    render_masses_.resize(max_particles);
-    
-    std::cout << "BarnesHutParticleSystem initialized with " << max_particles << " max particles\n";
-    std::cout << "Theta: " << config_.theta << ", Tree caching: " << (config_.enable_tree_caching ? "enabled" : "disabled") << "\n";
-    std::cout << "Morton Z-order optimization: " << (morton_ordering_enabled_ ? "enabled" : "disabled") << "\n";
-    
-#ifdef _OPENMP
-    if (config_.enable_threading) {
-        std::cout << "OpenMP threading enabled with " << omp_get_max_threads() << " threads\n";
-        omp_set_dynamic(0);
-        omp_set_num_threads(8);
+    if (enough_particles && (time_to_reorder || tree_rebuilding)) {
+        last_morton_frame = current_frame_;
+        return true;
     }
-#endif
+    
+    return false;
 }
 
-
-
-BarnesHutParticleSystem::~BarnesHutParticleSystem() = default;
+void BarnesHutParticleSystem::check_for_morton_reordering_need() {
+    if (particle_count_ < 100) return;  
+    
+    const size_t sample_size = std::min(particle_count_, size_t(50));
+    const double movement_threshold = 0.1;
+    
+    double world_size = std::max(bounds_max_x_ - bounds_min_x_, bounds_max_y_ - bounds_min_y_);
+    double threshold_distance = movement_threshold * world_size;
+    double threshold_distance_sq = threshold_distance * threshold_distance;
+    
+    size_t moved_particles = 0;
+    
+    for (size_t i = 0; i < sample_size; ++i) {
+        size_t idx = (i * particle_count_) / sample_size;
+        if (idx < previous_positions_.size()) {
+            double dx = positions_x_[idx] - previous_positions_[idx].x();
+            double dy = positions_y_[idx] - previous_positions_[idx].y();
+            if (dx*dx + dy*dy > threshold_distance_sq) {
+                moved_particles++;
+            }
+        }
+    }
+    
+    if (moved_particles > sample_size * 0.3) {
+        particles_need_reordering_ = true;
+    }
+}
 
 std::vector<BarnesHutParticleSystem::QuadTreeBox> BarnesHutParticleSystem::get_quadtree_boxes() const {
     std::vector<QuadTreeBox> boxes;
     
-    // Check if quadtree visualization is enabled and tree is valid
     if (!visualize_quadtree_ || !tree_valid_ || tree_nodes_.empty()) {
         return boxes;
     }
 
-    // Use the proper recursive traversal method that already exists
     if (root_node_index_ != UINT32_MAX && root_node_index_ < tree_nodes_.size()) {
         collect_quadtree_boxes(root_node_index_, boxes);
     }
@@ -320,7 +364,6 @@ void BarnesHutParticleSystem::collect_quadtree_boxes(uint32_t node_index, std::v
     
     const QuadTreeNode& node = tree_nodes_[node_index];
     
-    // Add this node's bounding box
     boxes.emplace_back(
         static_cast<float>(node.min_x),
         static_cast<float>(node.min_y),
@@ -331,7 +374,6 @@ void BarnesHutParticleSystem::collect_quadtree_boxes(uint32_t node_index, std::v
         node.is_leaf != 0
     );
     
-    // Recursively add children if this is an internal node
     if (!node.is_leaf) {
         for (int i = 0; i < 4; ++i) {
             if (node.children[i] != UINT32_MAX) {
@@ -359,14 +401,12 @@ bool BarnesHutParticleSystem::add_particle(const Vec2& pos, const Vec2& vel, flo
     colors_b_[idx] = color.z;
     
     particle_count_++;
-    tree_valid_ = false;  // Invalidate tree
+    tree_valid_ = false; 
     
-    // NEW: Mark for Morton reordering when enough particles have been added
     if (morton_ordering_enabled_ && particle_count_ >= 100) {
         particles_need_reordering_ = true;
     }
     
-    // Emit particle added event
     ParticleAddedEvent event{idx, static_cast<float>(pos.x), static_cast<float>(pos.y), 
                            static_cast<float>(vel.x), static_cast<float>(vel.y), 
                            mass, color.x, color.y, color.z};
@@ -374,6 +414,34 @@ bool BarnesHutParticleSystem::add_particle(const Vec2& pos, const Vec2& vel, flo
     
     return true;
 }
+void BarnesHutParticleSystem::check_for_morton_reordering_need() {
+    if (particle_count_ < 100) return;  
+    
+    const size_t sample_size = std::min(particle_count_, size_t(50));
+    const double movement_threshold = 0.1;
+    
+    double world_size = std::max(bounds_max_x_ - bounds_min_x_, bounds_max_y_ - bounds_min_y_);
+    double threshold_distance = movement_threshold * world_size;
+    double threshold_distance_sq = threshold_distance * threshold_distance;
+    
+    size_t moved_particles = 0;
+    
+    for (size_t i = 0; i < sample_size; ++i) {
+        size_t idx = (i * particle_count_) / sample_size;
+        if (idx < previous_positions_.size()) {
+            double dx = positions_x_[idx] - previous_positions_[idx].x();
+            double dy = positions_y_[idx] - previous_positions_[idx].y();
+            if (dx*dx + dy*dy > threshold_distance_sq) {
+                moved_particles++;
+            }
+        }
+    }
+    
+    if (moved_particles > sample_size * 0.3) {
+        particles_need_reordering_ = true;
+    }
+}
+
 
 void BarnesHutParticleSystem::clear_particles() {
     particle_count_ = 0;
@@ -388,7 +456,6 @@ void BarnesHutParticleSystem::clear_particles() {
 void BarnesHutParticleSystem::remove_particle(size_t index) {
     if (index >= particle_count_) return;
     
-    // Move last particle to this position (swap-remove)
     if (index < particle_count_ - 1) {
         positions_x_[index] = positions_x_[particle_count_ - 1];
         positions_y_[index] = positions_y_[particle_count_ - 1];
@@ -405,7 +472,6 @@ void BarnesHutParticleSystem::remove_particle(size_t index) {
     particle_count_--;
     tree_valid_ = false;
     
-    // NEW: Mark for reordering after removal
     if (morton_ordering_enabled_) {
         particles_need_reordering_ = true;
     }
@@ -416,9 +482,8 @@ void BarnesHutParticleSystem::set_boundary(float min_x, float max_x, float min_y
     bounds_max_x_ = max_x;
     bounds_min_y_ = min_y;
     bounds_max_y_ = max_y;
-    tree_valid_ = false;  // Boundary change invalidates tree
+    tree_valid_ = false;  
     
-    // NEW: Boundary changes may affect Morton ordering
     if (morton_ordering_enabled_) {
         particles_need_reordering_ = true;
     }
@@ -431,119 +496,10 @@ void BarnesHutParticleSystem::set_config(const Config& config) {
 }
 
 
-void BarnesHutParticleSystem::update(float dt) {
-    if (particle_count_ == 0) return;
-    
-    auto start_time = std::chrono::high_resolution_clock::now();
-    current_frame_++;
-    
-    // Reset profiling counters
-    reset_profiling_counters();
-    
-    // NEW: Apply Morton reordering if needed and beneficial
-    if (morton_ordering_enabled_ && should_apply_morton_ordering()) {
-        auto morton_start = std::chrono::high_resolution_clock::now();
-        apply_morton_ordering();
-        auto morton_end = std::chrono::high_resolution_clock::now();
-        perf_stats_.morton_ordering_time_ms = std::chrono::duration<float, std::milli>(morton_end - morton_start).count();
-        perf_stats_.morton_ordering_applied = true;
-    } else {
-        perf_stats_.morton_ordering_time_ms = 0.0f;
-        perf_stats_.morton_ordering_applied = false;
-    }
-    
-    // ONLY do initial setup if forces haven't been calculated yet
-    // (For first frame or after major changes)
-    bool need_initial_forces = (iteration_count_ == 0) || 
-                               (std::all_of(forces_x_.begin(), forces_x_.begin() + particle_count_, 
-                                          [](float f) { return f == 0.0f; }));
-    
-    if (need_initial_forces) {
-        // Initial force calculation for first step
-        std::fill(forces_x_.begin(), forces_x_.begin() + particle_count_, 0.0);
-        std::fill(forces_y_.begin(), forces_y_.begin() + particle_count_, 0.0);
-        
-        calculate_bounds();
-        auto tree_start = std::chrono::high_resolution_clock::now();
-        build_tree();  // Initial tree build
-        auto tree_end = std::chrono::high_resolution_clock::now();
-        perf_stats_.tree_build_time_ms = std::chrono::duration<float, std::milli>(tree_end - tree_start).count();
-        perf_stats_.tree_was_rebuilt = true;
-        
-        auto force_start = std::chrono::high_resolution_clock::now();
-        calculate_forces_barnes_hut();
-        auto force_end = std::chrono::high_resolution_clock::now();
-        perf_stats_.tree_traversal_time_ms = std::chrono::duration<float, std::milli>(force_end - force_start).count();
-    } else {
-        perf_stats_.tree_build_time_ms = 0.0f;
-        perf_stats_.tree_traversal_time_ms = 0.0f;
-        perf_stats_.tree_was_rebuilt = false;
-    }
-    
-    // Verlet integration handles ALL the physics:
-    // - Position updates
-    // - Tree rebuilding at new positions  
-    // - Force recalculation
-    // - Final velocity updates
-    auto integration_start = std::chrono::high_resolution_clock::now();
-    integrate_verlet(dt);
-    auto integration_end = std::chrono::high_resolution_clock::now();
-    perf_stats_.integration_time_ms = std::chrono::duration<float, std::milli>(integration_end - integration_start).count();
-    
-    // Update performance stats
-    auto total_end = std::chrono::high_resolution_clock::now();
-    float total_frame_time = std::chrono::duration<float, std::milli>(total_end - start_time).count();
-    update_detailed_performance_stats(total_frame_time);
-    update_performance_stats();
-    
-    // Prepare rendering data
-    prepare_render_data();
-    
-    iteration_count_++;
-     
-    // Emit events
-    PhysicsUpdateEvent physics_event{dt, particle_count_, iteration_count_};
-    event_bus_.emit(Events::PHYSICS_UPDATE, physics_event);
-    
-    RenderUpdateEvent render_event{
-        render_positions_.data(), 
-        render_colors_.data(), 
-        particle_count_,
-        static_cast<float>(bounds_min_x_), static_cast<float>(bounds_max_x_),
-        static_cast<float>(bounds_min_y_), static_cast<float>(bounds_max_y_)
-    };
-    event_bus_.emit(Events::RENDER_UPDATE, render_event);
-}
-
-
-// NEW: Check if Morton ordering should be applied
-bool BarnesHutParticleSystem::should_apply_morton_ordering() const {
-    if (!particles_need_reordering_) return false;
-    
-    // Apply Morton ordering in these cases:
-    // 1. When we have enough particles to benefit (>= 100)
-    // 2. Not too frequently (every 60 frames at most)
-    // 3. When tree is being rebuilt anyway
-    
-    static uint32_t last_morton_frame = 0;
-    const uint32_t morton_interval = 60;  // Apply at most every 60 frames
-    
-    bool enough_particles = particle_count_ >= 100;
-    bool time_to_reorder = (current_frame_ - last_morton_frame) >= morton_interval;
-    bool tree_rebuilding = !tree_valid_ || should_rebuild_tree();
-    
-    if (enough_particles && (time_to_reorder || tree_rebuilding)) {
-        last_morton_frame = current_frame_;
-        return true;
-    }
-    
-    return false;
-}
 
 void BarnesHutParticleSystem::build_tree() {
     auto total_start = std::chrono::high_resolution_clock::now();
 
-    // Reset tree state
     tree_nodes_.clear();
     next_free_node_ = 0;
     perf_stats_.tree_nodes_created = 0;
@@ -555,7 +511,6 @@ void BarnesHutParticleSystem::build_tree() {
         return;
     }
     
-    // Reset compact leaf storage - clear() but don't resize
     leaf_pos_x_.clear();   
     leaf_pos_y_.clear();   
     leaf_mass_.clear();    
@@ -563,25 +518,20 @@ void BarnesHutParticleSystem::build_tree() {
     leaf_offset_.clear();  
     leaf_count_.clear();
 
-    // Estimate leaf count and reserve once
     const size_t leaf_threshold = std::clamp<size_t>(config_.max_particles_per_leaf, 1, 64);
     const size_t est_leaves = std::max<size_t>(1, (N + leaf_threshold - 1) / leaf_threshold);
     leaf_offset_.reserve(est_leaves);
     leaf_count_.reserve(est_leaves);
 
-    // Reserve leaf arrays once (already done in constructor, but ensure capacity)
     leaf_pos_x_.reserve(N);
     leaf_pos_y_.reserve(N);
     leaf_mass_.reserve(N);
     leaf_idx_.reserve(N);
 
-    // No assign/fill - we'll write every slot exactly once during leaf gather
     particle_leaf_slot_.resize(N);
 
-    // Phase 1 & 2: Morton sort (now uses waterline system)
     sort_by_morton_key();
 
-    // Phase 3: Build tree nodes using MEMBER stack (no reserve in loop!)
     const int leaf_cap = std::clamp<int>(static_cast<int>(config_.max_particles_per_leaf), 1, 64);
     size_t estimated_nodes = std::max<size_t>(64, (N * 8) / std::max(1, leaf_cap));
     tree_nodes_.reserve(estimated_nodes);
@@ -598,12 +548,11 @@ void BarnesHutParticleSystem::build_tree() {
         root.children[i] = UINT32_MAX;
     }
 
-    // Use MEMBER stack (no reserve each time!)
-    node_stack_.clear();  // Just clear, don't reserve
+    node_stack_.clear();  
     node_stack_.emplace_back(root_node_index_, 0, N - 1, 0);
 
     while (!node_stack_.empty()) {
-        auto item = node_stack_.back();  // Avoid copy with auto
+        auto item = node_stack_.back();  
         node_stack_.pop_back();
 
         QuadTreeNode& node = tree_nodes_[item.node_index];
@@ -619,12 +568,10 @@ void BarnesHutParticleSystem::build_tree() {
             const uint32_t cnt = static_cast<uint32_t>(count);
             node.particle_count = static_cast<uint8_t>(std::min<uint32_t>(cnt, 255));
 
-            // Compact gather for this leaf (no resize, just push_back to pre-reserved)
             const uint32_t off = static_cast<uint32_t>(leaf_pos_x_.size());
             leaf_offset_.push_back(off);
             leaf_count_.push_back(cnt);
 
-            // Expand leaf arrays by exact amount needed (push_back to reserved space)
             for (uint32_t t = 0; t < cnt; ++t) {
                 const size_t global_idx = morton_indices_[item.first + t];
                 
@@ -633,7 +580,7 @@ void BarnesHutParticleSystem::build_tree() {
                 leaf_mass_.push_back(masses_[global_idx]);
                 leaf_idx_.push_back(static_cast<uint32_t>(global_idx));
                 
-                particle_leaf_slot_[global_idx] = off + t;  // Write every slot exactly once
+                particle_leaf_slot_[global_idx] = off + t;  
             }
 
             node.leaf_first = off;
@@ -648,7 +595,6 @@ void BarnesHutParticleSystem::build_tree() {
             continue;
         }
 
-        // Internal node processing
         node.is_leaf = 0;
         node.particle_count = static_cast<uint8_t>(count);
 
@@ -677,7 +623,6 @@ void BarnesHutParticleSystem::build_tree() {
                 child.children[i] = UINT32_MAX;
             }
 
-            // Set quadrant bounds
             switch (quad) {
                 case 0: // SW
                     child.min_x = parent.min_x; child.max_x = cx;
@@ -701,10 +646,8 @@ void BarnesHutParticleSystem::build_tree() {
         }
     }
 
-    // Rest of build_tree: COM calculation (unchanged)
     calculate_center_of_mass(root_node_index_);
 
-    // Only resize previous_positions_ when particle count changes (not every rebuild)
     if (previous_positions_.size() != particle_count_) {
         previous_positions_.resize(particle_count_);
     }
@@ -719,48 +662,14 @@ void BarnesHutParticleSystem::build_tree() {
     perf_stats_.tree_build_time_ms = std::chrono::duration<float, std::milli>(total_end - total_start).count();
 }
 
-void BarnesHutParticleSystem::apply_morton_ordering() {
-    if (particle_count_ == 0) return;
-    
-    // 1. Calculate Morton codes using SAME encoder as tree builder
-    std::vector<std::pair<uint64_t, size_t>> morton_particles;
-    morton_particles.reserve(particle_count_);
-    
-    // ✅ FIXED: Use consistent 21-bit precision encoder
-    for (size_t i = 0; i < particle_count_; ++i) {
-        uint64_t morton = MortonEncoder::encode_position(
-            positions_x_[i], positions_y_[i],
-            bounds_min_x_, bounds_max_x_,
-            bounds_min_y_, bounds_max_y_);
-        morton_particles.emplace_back(morton, i);
-    }
-    
-    // 2. Sort particles by Morton code (Z-order)
-    radix_sort_indices();
-    
-    // 🔧 FIXED: Populate morton_indices_ from sorted morton_particles
-    morton_indices_.resize(particle_count_);
-    for (size_t i = 0; i < particle_count_; ++i) {
-        morton_indices_[i] = morton_particles[i].second;  // Extract the original index
-    }
-    
-    // 3. Now reorder all particle data according to Morton order,
-    //apply_morton_permutation_to_arrays();  
-    
-    // 4. Force tree rebuild and mark as no longer needing reordering
-    tree_valid_ = false;
-    particles_need_reordering_ = false;
-}
 
 bool BarnesHutParticleSystem::should_rebuild_tree() const {
     if (!config_.enable_tree_caching || previous_positions_.size() != particle_count_) {
         return true;
     }
 
-    // ratio threshold (use your config)
     const double ratio_threshold = std::clamp<double>(config_.tree_rebuild_threshold, 0.0, 1.0);
 
-    // distance threshold = 1% of the larger side of the current AABB
     const double world_w = bounds_max_x_ - bounds_min_x_;
     const double world_h = bounds_max_y_ - bounds_min_y_;
     const double dist_threshold = 0.01 * std::max(world_w, world_h);
@@ -801,7 +710,6 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
 
         float total_m = 0.0f, wx = 0.0f, wy = 0.0f;
         
-        // First pass: Calculate center of mass using compact leaf arrays
         for (uint32_t t = 0; t < cnt; ++t) {
             const float m = leaf_mass_[off + t];
             total_m += m;
@@ -817,7 +725,6 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
             node.com_x = node.com_y = 0.0f;
         }
 
-        // Second pass: Calculate tight bounding radius from COM using compact arrays
         float max_dist_sq = 0.0f;
         for (uint32_t t = 0; t < cnt; ++t) {
             const float dx = leaf_pos_x_[off + t] - node.com_x;
@@ -831,12 +738,10 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
         return;
     }
     
-    // Internal node: Calculate from children (unchanged)
     float total_mass = 0.0f;
     float weighted_x = 0.0f;
     float weighted_y = 0.0f;
     
-    // First pass: Accumulate mass and COM
     for (int i = 0; i < 4; ++i) {
         if (node.children[i] != UINT32_MAX) {
             calculate_center_of_mass(node.children[i]);  // Recursive call
@@ -850,7 +755,6 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
         }
     }
     
-    // Set parent COM
     if (total_mass > 0.0f) {
         node.com_x = weighted_x / total_mass;
         node.com_y = weighted_y / total_mass;
@@ -860,7 +764,6 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
         node.total_mass = 0.0f;
     }
     
-    // Second pass: Calculate tight bounding radius for internal node
     float max_bound_r = 0.0f;
     for (int i = 0; i < 4; ++i) {
         if (node.children[i] != UINT32_MAX) {
@@ -880,19 +783,15 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
 }
 
 void BarnesHutParticleSystem::compute_frame_constants() {
-    // Calculate bounds (this already happens in build_tree)
     calculate_bounds();
     
-    // Compute adaptive softening for this frame
     const float world_span_x = float(bounds_max_x_ - bounds_min_x_);
     const float world_span_y = float(bounds_max_y_ - bounds_min_y_);
     const float world_scale = std::max(world_span_x, world_span_y);
     
-    // Cache softening for the entire frame
     const float eps = config_.softening_rel * world_scale;
     frame_eps2_ = eps * eps;
     
-    // Also cache root COM for centering (avoid repeated lookups)
     root_com_x_ = tree_nodes_[root_node_index_].com_x;
     root_com_y_ = tree_nodes_[root_node_index_].com_y;
 }
@@ -900,20 +799,17 @@ void BarnesHutParticleSystem::compute_frame_constants() {
 void BarnesHutParticleSystem::calculate_forces_barnes_hut() {
     if (!tree_valid_ || root_node_index_ == UINT32_MAX) return;
 
-    // Warm up cache (optional; consider profiling with/without)
     prefetch_tree_nodes();
 
     const float* const positions_x = positions_x_.data();
     const float* const positions_y = positions_y_.data();
     const float* const masses      = masses_.data();
 
-    // Parallelize over particles (each i writes distinct forces_[i] → no data races)
     #ifdef _OPENMP
     if (config_.enable_threading) {
         #pragma omp parallel for schedule(static)
         for (long long i = 0; i < (long long)particle_count_; ++i) {
             float fx = 0.0, fy = 0.0;
-            // NOTE: calculate_force_on_particle_iterative must not touch shared counters in threaded mode
             (void)calculate_force_on_particle_iterative((size_t)i, fx, fy, positions_x, positions_y, masses);
             forces_x_[(size_t)i] += fx;
             forces_y_[(size_t)i] += fy;
@@ -922,7 +818,6 @@ void BarnesHutParticleSystem::calculate_forces_barnes_hut() {
     }
     #endif
 
-    // Fallback single-thread path
     for (size_t i = 0; i < particle_count_; ++i) {
         float fx = 0.0, fy = 0.0;
         (void)calculate_force_on_particle_iterative(i, fx, fy, positions_x, positions_y, masses);
@@ -1546,50 +1441,17 @@ void BarnesHutParticleSystem::integrate_verlet(float dt) {
 }
 
 
-// NEW: Check if particles have moved enough to warrant Morton reordering
-void BarnesHutParticleSystem::check_for_morton_reordering_need() {
-    if (particle_count_ < 100) return;  // Not worth it for small particle counts
-    
-    // Sample a subset of particles to check movement
-    const size_t sample_size = std::min(particle_count_, size_t(50));
-    const double movement_threshold = 0.1;  // Relative to world size
-    
-    double world_size = std::max(bounds_max_x_ - bounds_min_x_, bounds_max_y_ - bounds_min_y_);
-    double threshold_distance = movement_threshold * world_size;
-    double threshold_distance_sq = threshold_distance * threshold_distance;
-    
-    size_t moved_particles = 0;
-    
-    for (size_t i = 0; i < sample_size; ++i) {
-        size_t idx = (i * particle_count_) / sample_size;  // Distributed sampling
-        if (idx < previous_positions_.size()) {
-            double dx = positions_x_[idx] - previous_positions_[idx].x();
-            double dy = positions_y_[idx] - previous_positions_[idx].y();
-            if (dx*dx + dy*dy > threshold_distance_sq) {
-                moved_particles++;
-            }
-        }
-    }
-    
-    // If more than 30% of sampled particles moved significantly, mark for reordering
-    if (moved_particles > sample_size * 0.3) {
-        particles_need_reordering_ = true;
-    }
-}
 
 
 void BarnesHutParticleSystem::prepare_render_data() {
     for (size_t i = 0; i < particle_count_; ++i) {
-        // Interleaved position data for legacy compatibility
         render_positions_[i * 2 + 0] = static_cast<float>(positions_x_[i]);
         render_positions_[i * 2 + 1] = static_cast<float>(positions_y_[i]);
         
-        // Color data
         render_colors_[i * 3 + 0] = colors_r_[i];
         render_colors_[i * 3 + 1] = colors_g_[i];
         render_colors_[i * 3 + 2] = colors_b_[i];
         
-        // Separate arrays for easier access
         render_positions_x_[i] = static_cast<float>(positions_x_[i]);
         render_positions_y_[i] = static_cast<float>(positions_y_[i]);
         render_velocities_x_[i] = static_cast<float>(velocities_x_[i]);
@@ -1617,42 +1479,26 @@ void BarnesHutParticleSystem::calculate_bounds() {
     bounds_max_y_ = max_y;
 }
 
-void BarnesHutParticleSystem::update_performance_stats() {
-    // Calculate efficiency ratio
-    const size_t total_calculations = perf_stats_.force_calculations + perf_stats_.approximations_used;
-    if (total_calculations > 0) {
-        perf_stats_.efficiency_ratio = static_cast<float>(perf_stats_.approximations_used) / total_calculations;
-    } else {
-        perf_stats_.efficiency_ratio = 0.0f;
-    }
-    
-    // Calculate cache hit ratio (placeholder for now)
-    if (config_.enable_tree_caching && !perf_stats_.tree_was_rebuilt) {
-        perf_stats_.cache_hit_ratio = 1.0f;
-    } else {
-        perf_stats_.cache_hit_ratio = 0.0f;
-    }
-}
 
 // Accessor methods
 Vec2 BarnesHutParticleSystem::get_position(size_t index) const {
     if (index >= particle_count_) return Vec2();
-    return Vec2(positions_x_[index], positions_y_[index]);  // Direct assignment (both float)
+    return Vec2(positions_x_[index], positions_y_[index]);  
 }
 
 Vec2 BarnesHutParticleSystem::get_velocity(size_t index) const {
     if (index >= particle_count_) return Vec2();
-    return Vec2(velocities_x_[index], velocities_y_[index]);  // Direct assignment (both float)
+    return Vec2(velocities_x_[index], velocities_y_[index]);  
 }
 
 Vec2 BarnesHutParticleSystem::get_force(size_t index) const {
     if (index >= particle_count_) return Vec2();
-    return Vec2(forces_x_[index], forces_y_[index]);  // Direct assignment (both float)
+    return Vec2(forces_x_[index], forces_y_[index]);  
 }
 
 float BarnesHutParticleSystem::get_mass(size_t index) const {
     if (index >= particle_count_) return 0.0f;
-    return masses_[index];  // Direct return (both float)
+    return masses_[index];  
 }
 
 Vec3 BarnesHutParticleSystem::get_color(size_t index) const {
@@ -1660,15 +1506,7 @@ Vec3 BarnesHutParticleSystem::get_color(size_t index) const {
     return Vec3(colors_r_[index], colors_g_[index], colors_b_[index]);
 }
 
-// NEW: Set Morton ordering enabled/disabled
-void BarnesHutParticleSystem::set_morton_ordering_enabled(bool enabled) {
-    morton_ordering_enabled_ = enabled;
-    if (enabled && particle_count_ >= 100) {
-        particles_need_reordering_ = true;
-    }
-}
 
-// Tree visualization for debugging
 BarnesHutParticleSystem::TreeNode BarnesHutParticleSystem::get_tree_visualization() const {
     if (!tree_valid_ || root_node_index_ == UINT32_MAX) {
         return TreeNode{};
@@ -1697,205 +1535,9 @@ BarnesHutParticleSystem::TreeNode BarnesHutParticleSystem::build_tree_visualizat
     return viz_node;
 }
 
-// Performance analysis and debugging methods
-
-void BarnesHutParticleSystem::reset_profiling_counters() {
-    current_tree_nodes_visited_ = 0;
-    current_leaf_nodes_hit_ = 0;
-    current_internal_nodes_hit_ = 0;
-    current_theta_tests_ = 0;
-    current_theta_passed_ = 0;
-    current_tree_depth_sum_ = 0.0f;
-}
-
-void BarnesHutParticleSystem::update_detailed_performance_stats(float total_frame_time) {
-    // Calculate particles per second
-    if (perf_stats_.force_calculation_time_ms > 0) {
-        perf_stats_.particles_per_second = (particle_count_ * 1000.0f) / perf_stats_.force_calculation_time_ms;
-        perf_stats_.force_calculations_per_second = (perf_stats_.force_calculations * 1000.0f) / perf_stats_.force_calculation_time_ms;
-    }
-    
-    // Tree traversal statistics
-    perf_stats_.tree_nodes_visited = current_tree_nodes_visited_;
-    perf_stats_.leaf_nodes_hit = current_leaf_nodes_hit_;
-    perf_stats_.internal_nodes_hit = current_internal_nodes_hit_;
-    
-    // Theta test statistics
-    perf_stats_.total_theta_tests = current_theta_tests_;
-    perf_stats_.theta_tests_passed = current_theta_passed_;
-    if (current_theta_tests_ > 0) {
-        perf_stats_.theta_pass_ratio = static_cast<float>(current_theta_passed_) / current_theta_tests_;
-    }
-    
-    // Average tree depth per particle
-    if (particle_count_ > 0) {
-        perf_stats_.avg_tree_depth_per_particle = current_tree_depth_sum_ / particle_count_;
-    }
-    
-    // Memory usage estimation
-    size_t particle_memory = particle_count_ * (sizeof(double) * 6 + sizeof(float) * 3); // pos, vel, force, mass, color
-    size_t tree_memory = tree_nodes_.size() * sizeof(QuadTreeNode);
-    size_t other_memory = render_positions_.size() * sizeof(float) + render_colors_.size() * sizeof(float);
-    perf_stats_.memory_usage_mb = static_cast<float>(particle_memory + tree_memory + other_memory) / (1024.0f * 1024.0f);
-    
-    // Brute force comparison
-    perf_stats_.brute_force_equivalent_ops = particle_count_ * particle_count_; // N²
-    if (perf_stats_.force_calculations + perf_stats_.approximations_used > 0) {
-        perf_stats_.speedup_vs_brute_force = static_cast<float>(perf_stats_.brute_force_equivalent_ops) / 
-                                           (perf_stats_.force_calculations + perf_stats_.approximations_used);
-    }
-}
-
-void BarnesHutParticleSystem::apply_morton_permutation_to_arrays() {
-    if (particle_count_ == 0 || morton_indices_.empty()) return;
-    // Reuse inv_perm_ buffer (don't clear, just resize)
-    inv_perm_.resize(particle_count_);
-    
-    // Build inverse permutation: old -> new
-    for (size_t new_idx = 0; new_idx < particle_count_; ++new_idx) {
-        size_t old_idx = morton_indices_[new_idx];
-        assert(old_idx < particle_count_); // Safety check
-        inv_perm_[old_idx] = new_idx;
-    }
-    
-    // Debug: Verify permutation is valid bijection
-    #ifndef NDEBUG
-    std::vector<uint8_t> seen(particle_count_, 0);
-    for (size_t v : inv_perm_) { 
-        assert(v < particle_count_ && !seen[v]); 
-        seen[v] = 1; 
-    }
-    #endif
-    
-    // In-place permutation using old -> new mapping (single-threaded)
-    permute_in_place(positions_x_, inv_perm_, particle_count_, visited_);
-    permute_in_place(positions_y_, inv_perm_, particle_count_, visited_);
-    permute_in_place(velocities_x_, inv_perm_, particle_count_, visited_);
-    permute_in_place(velocities_y_, inv_perm_, particle_count_, visited_);
-    permute_in_place(masses_, inv_perm_, particle_count_, visited_);
-    permute_in_place(colors_r_, inv_perm_, particle_count_, visited_);
-    permute_in_place(colors_g_, inv_perm_, particle_count_, visited_);
-    permute_in_place(colors_b_, inv_perm_, particle_count_, visited_);
-    
-    // CRITICAL: Also permute Morton keys to maintain sort order
-    permute_in_place(morton_keys_, inv_perm_, particle_count_, visited_);
-    
-    // Debug: Verify keys are still sorted after permutation
-    #ifndef NDEBUG
-    for (size_t i = 1; i < particle_count_; ++i) {
-        assert(morton_keys_[i-1] <= morton_keys_[i]);
-    }
-    
-    // Debug: Check top-level quadrant distribution  
-    int counts[4] = {0, 0, 0, 0};
-    const int level_shift0 = MORTON_TOTAL_BITS - 2;  // depth = 0
-    const uint64_t mask0 = 3ULL << level_shift0;
-    static constexpr int z_to_child[4] = { 0, 2, 1, 3 };
-    
-    for (size_t i = 0; i < particle_count_; ++i) {
-        int z_quad = static_cast<int>((morton_keys_[i] & mask0) >> level_shift0);
-        int child_slot = z_to_child[z_quad];
-        counts[child_slot]++;
-    }
-    
-    std::cout << "✅ Morton keys remain sorted after permutation\n";
-    std::cout << "📊 Top-level quadrant distribution SW,SE,NW,NE = " 
-              << counts[0] << "," << counts[1] << "," << counts[2] << "," << counts[3] << "\n";
-    #endif
-    
-    // Keys are now sorted and aligned - morton_keys_ IS the sorted array!
-    
-    // Clean up morton_indices_ but keep inv_perm_ and visited_ for reuse
-    //morton_indices_.clear();
-    // DON'T clear inv_perm_ or visited_ - keep them sized for next rebuild
-}
-
-
-void BarnesHutParticleSystem::nuclear_particle_separation() {
-    std::cout << "💥 NUCLEAR PARTICLE SEPARATION (for 20k particles at same spot)\n";
-    
-    if (particle_count_ == 0) return;
-    
-    auto start_time = std::chrono::high_resolution_clock::now();
-    
-    // MASSIVE separation distance for 20k particles
-    const double separation_radius = 50.0;  // HUGE radius
-    const double min_distance = 0.5;        // Minimum distance between particles
-    
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    
-    // Different strategies based on particle count
-    if (particle_count_ < 1000) {
-        // Small count: Use grid layout
-        int grid_size = static_cast<int>(std::ceil(std::sqrt(particle_count_)));
-        double spacing = separation_radius * 2.0 / grid_size;
-        
-        for (size_t i = 0; i < particle_count_; ++i) {
-            int row = i / grid_size;
-            int col = i % grid_size;
-            
-            positions_x_[i] = (col - grid_size/2.0) * spacing;
-            positions_y_[i] = (row - grid_size/2.0) * spacing;
-        }
-        
-        std::cout << "   ✅ Grid separation applied to " << particle_count_ << " particles\n";
-        
-    } else {
-        // Large count: Use random distribution in expanding circles
-        std::uniform_real_distribution<double> angle_dist(0.0, 2.0 * M_PI);
-        std::uniform_real_distribution<double> radius_dist(min_distance, separation_radius);
-        
-        // First particle at origin
-        if (particle_count_ > 0) {
-            positions_x_[0] = 0.0;
-            positions_y_[0] = 0.0;
-        }
-        
-        // Rest in expanding spiral/random pattern
-        for (size_t i = 1; i < particle_count_; ++i) {
-            double angle = angle_dist(gen);
-            
-            // Expand radius based on particle index for better spread
-            double base_radius = min_distance * std::sqrt(static_cast<double>(i));
-            double radius = std::min(base_radius, separation_radius);
-            
-            positions_x_[i] = radius * std::cos(angle);
-            positions_y_[i] = radius * std::sin(angle);
-            
-            // Add small random jitter to prevent perfect alignment
-            std::uniform_real_distribution<double> jitter(-min_distance*0.1, min_distance*0.1);
-            positions_x_[i] += jitter(gen);
-            positions_y_[i] += jitter(gen);
-        }
-        
-        std::cout << "   ✅ Spiral separation applied to " << particle_count_ << " particles\n";
-    }
-    
-    // Reset velocities to prevent immediate re-clustering
-    std::uniform_real_distribution<double> vel_dist(-1.0, 1.0);
-    for (size_t i = 0; i < particle_count_; ++i) {
-        velocities_x_[i] = vel_dist(gen);
-        velocities_y_[i] = vel_dist(gen);
-    }
-    
-    auto end_time = std::chrono::high_resolution_clock::now();
-    float fix_time = std::chrono::duration<float, std::milli>(end_time - start_time).count();
-    
-    std::cout << "   💥 Nuclear separation complete in " << fix_time << " ms\n";
-    std::cout << "   🎯 Particles spread over " << (separation_radius * 2) << " unit radius\n";
-    std::cout << "   ⚡ Tree depth should DROP from 200 to <20\n\n";
-    
-    // Force complete tree rebuild
-    tree_valid_ = false;
-    particles_need_reordering_ = true;
-}
-
 void BarnesHutParticleSystem::prefetch_tree_nodes() const {
-    // Prefetch commonly accessed tree nodes into cache
     if (!tree_valid_ || tree_nodes_.empty()) return;
     
-    // Prefetch root and first few levels
     size_t prefetch_count = std::min(size_t(64), tree_nodes_.size());
     
     for (size_t i = 0; i < prefetch_count; ++i) {
@@ -1903,679 +1545,92 @@ void BarnesHutParticleSystem::prefetch_tree_nodes() const {
     }
 }
 
-// Original optimization methods preserved but now called as part of default behavior
-void BarnesHutParticleSystem::optimize_particle_layout() {
-    //apply_morton_ordering();  // Just use the new default implementation
-    void test_scaling_bottleneck();
-}
-
-// Missing debug and analysis methods implementation
-bool BarnesHutParticleSystem::detect_performance_issues() const {
-    bool issues_found = false;
+void BarnesHutParticleSystem::update(float dt) {
+    if (particle_count_ == 0) return;
     
-    // Check for overlapping particles (major performance killer)
-    std::cout << "Checking for overlapping particles...\n";
-    size_t overlap_count = 0;
-    const double min_distance_sq = 1e-6; // Very small threshold
+    auto start_time = std::chrono::high_resolution_clock::now();
+    current_frame_++;
     
-    for (size_t i = 0; i < std::min(particle_count_, size_t(100)); ++i) {
-        for (size_t j = i + 1; j < std::min(particle_count_, size_t(100)); ++j) {
-            double dx = positions_x_[i] - positions_x_[j];
-            double dy = positions_y_[i] - positions_y_[j];
-            double dist_sq = dx * dx + dy * dy;
-            
-            if (dist_sq < min_distance_sq) {
-                overlap_count++;
-                if (overlap_count == 1) {
-                    std::cout << "⚠️ Found overlapping particles at (" 
-                              << positions_x_[i] << ", " << positions_y_[i] << ")\n";
-                }
-            }
-        }
-    }
+    // Reset profiling counters
+    reset_profiling_counters();
     
-    if (overlap_count > 0) {
-        std::cout << "⚠️ CRITICAL: " << overlap_count << " overlapping particles detected (sample of 100)\n";
-        std::cout << "   This causes extremely deep tree recursion and slow performance\n";
-        issues_found = true;
-    }
-    
-    // Check for NaN values
-    for (size_t i = 0; i < particle_count_; ++i) {
-        if (std::isnan(positions_x_[i]) || std::isnan(positions_y_[i]) ||
-            std::isnan(velocities_x_[i]) || std::isnan(velocities_y_[i]) ||
-            std::isnan(masses_[i])) {
-            std::cout << "⚠️ CRITICAL: NaN values detected in particle " << i << "\n";
-            issues_found = true;
-            break;
-        }
-    }
-    
-    // Check for infinite values
-    for (size_t i = 0; i < particle_count_; ++i) {
-        if (std::isinf(positions_x_[i]) || std::isinf(positions_y_[i]) ||
-            std::isinf(velocities_x_[i]) || std::isinf(velocities_y_[i])) {
-            std::cout << "⚠️ CRITICAL: Infinite values detected in particle " << i << "\n";
-            issues_found = true;
-            break;
-        }
-    }
-    
-    // Check for zero or negative masses
-    for (size_t i = 0; i < particle_count_; ++i) {
-        if (masses_[i] <= 0) {
-            std::cout << "⚠️ CRITICAL: Invalid mass " << masses_[i] << " in particle " << i << "\n";
-            issues_found = true;
-            break;
-        }
-    }
-    
-    return issues_found;
-}
-
-void BarnesHutParticleSystem::print_performance_analysis() const {
-    const auto& stats = get_performance_stats();
-    
-    std::cout << "\n=== BARNES-HUT PERFORMANCE ANALYSIS ===\n";
-    std::cout << "Particles: " << particle_count_ << "\n";
-    std::cout << "Tree nodes: " << stats.tree_nodes_created << "\n";
-    std::cout << "Tree depth: " << stats.tree_depth << "\n";
-    std::cout << "Theta: " << config_.theta << "\n";
-    std::cout << "Morton ordering: " << (morton_ordering_enabled_ ? "enabled" : "disabled") << "\n";
-    
-    std::cout << "\nTiming Breakdown:\n";
-    std::cout << "  Tree build: " << stats.tree_build_time_ms << " ms\n";
-    std::cout << "  Force calc: " << stats.force_calculation_time_ms << " ms\n";
-    std::cout << "    - Traversal: " << stats.tree_traversal_time_ms << " ms\n";
-    std::cout << "    - Boundary: " << stats.boundary_forces_time_ms << " ms\n";
-    std::cout << "    - Gravity: " << stats.gravity_forces_time_ms << " ms\n";
-    std::cout << "  Integration: " << stats.integration_time_ms << " ms\n";
-    if (stats.morton_ordering_applied) {
-        std::cout << "  Morton ordering: " << stats.morton_ordering_time_ms << " ms\n";
-    }
-    
-    std::cout << "\nAlgorithm Efficiency:\n";
-    std::cout << "  Direct calculations: " << stats.force_calculations << "\n";
-    std::cout << "  Approximations: " << stats.approximations_used << "\n";
-    std::cout << "  Total operations: " << (stats.force_calculations + stats.approximations_used) << "\n";
-    std::cout << "  Brute force equivalent: " << (particle_count_ * particle_count_) << "\n";
-    std::cout << "  Speedup: " << stats.speedup_vs_brute_force << "x\n";
-    std::cout << "  Efficiency: " << (stats.efficiency_ratio * 100.0f) << "% approximations\n";
-    
-    std::cout << "\nTree Traversal:\n";
-    std::cout << "  Nodes visited: " << stats.tree_nodes_visited << "\n";
-    std::cout << "  Leaf hits: " << stats.leaf_nodes_hit << "\n";
-    std::cout << "  Internal hits: " << stats.internal_nodes_hit << "\n";
-    std::cout << "  Avg depth/particle: " << stats.avg_tree_depth_per_particle << "\n";
-    
-    std::cout << "\nTheta Testing:\n";
-    std::cout << "  Tests performed: " << stats.total_theta_tests << "\n";
-    std::cout << "  Tests passed: " << stats.theta_tests_passed << "\n";
-    std::cout << "  Pass ratio: " << (stats.theta_pass_ratio * 100.0f) << "%\n";
-    
-    if (morton_ordering_enabled_) {
-        std::cout << "\nMorton Ordering:\n";
-        std::cout << "  Status: Enabled\n";
-        std::cout << "  Applied this frame: " << (stats.morton_ordering_applied ? "Yes" : "No") << "\n";
-        if (stats.morton_ordering_applied) {
-            std::cout << "  Time: " << stats.morton_ordering_time_ms << " ms\n";
-        }
-    }
-    
-    // Performance analysis
-    std::cout << "\n=== ANALYSIS ===\n";
-    
-    if (stats.force_calculation_time_ms > 10.0f && particle_count_ < 5000) {
-        std::cout << "⚠️ ISSUE: Force calculation too slow for particle count\n";
-        std::cout << "   - Try increasing theta (current: " << config_.theta << ")\n";
-        std::cout << "   - Check if tree is being rebuilt every frame\n";
-    }
-    
-    if (stats.efficiency_ratio < 0.5f) {
-        std::cout << "⚠️ ISSUE: Low approximation ratio (" << (stats.efficiency_ratio * 100.0f) << "%)\n";
-        std::cout << "   - Barnes-Hut not providing expected speedup\n";
-        std::cout << "   - Try increasing theta for more approximations\n";
-    }
-    
-    if (stats.tree_depth > 20) {
-        std::cout << "⚠️ ISSUE: Tree too deep (" << stats.tree_depth << " levels)\n";
-        std::cout << "   - Particles may be overlapping or highly clustered\n";
-        std::cout << "   - Check for duplicate positions\n";
-    }
-    
-    std::cout << "==========================================\n\n";
-}
-
-
-void BarnesHutParticleSystem::diagnose_30ms_issue() {
-    std::cout << "\n=== DIAGNOSING 30MS FORCE CALCULATION ===\n";
-    
-    const auto& stats = get_performance_stats();
-    
-    std::cout << "Current particle count: " << particle_count_ << "\n";
-    std::cout << "Force calculation time: " << stats.force_calculation_time_ms << " ms\n";
-    std::cout << "Morton ordering: " << (morton_ordering_enabled_ ? "enabled" : "disabled") << "\n";
-    
-    // Expected performance for different particle counts
-    if (particle_count_ < 1000) {
-        std::cout << "⚠️ CRITICAL: 30ms is WAY too slow for " << particle_count_ << " particles\n";
-        std::cout << "   Expected: <1ms for this count\n";
-    } else if (particle_count_ < 5000) {
-        std::cout << "⚠️ ISSUE: 30ms is too slow for " << particle_count_ << " particles\n";
-        std::cout << "   Expected: 1-5ms for this count\n";
-    }
-    
-    std::cout << "=========================================\n\n";
-}
-
-void BarnesHutParticleSystem::test_theta_performance() {
-    if (particle_count_ == 0) {
-        std::cout << "No particles to test theta performance\n";
-        return;
-    }
-    
-    std::cout << "\n=== THETA PERFORMANCE TEST ===\n";
-    std::cout << "Testing different theta values with " << particle_count_ << " particles\n";
-    std::cout << "Morton ordering: " << (morton_ordering_enabled_ ? "enabled" : "disabled") << "\n\n";
-    
-    // Store original configuration
-    Config original_config = config_;
-    
-    // Test different theta values
-    std::vector<float> theta_values = {0.3f, 0.5f, 0.75f, 1.0f, 1.5f, 2.0f};
-    
-    for (float theta : theta_values) {
-        // Update configuration
-        config_.theta = theta;
-        config_.theta_squared = theta * theta;
-        
-        // Force tree rebuild
-        tree_valid_ = false;
-        
-        // Time a single force calculation pass
-        auto start = std::chrono::high_resolution_clock::now();
-        
-        // Clear forces and calculate using Barnes-Hut
-        std::fill(forces_x_.begin(), forces_x_.begin() + particle_count_, 0.0);
-        std::fill(forces_y_.begin(), forces_y_.begin() + particle_count_, 0.0);
-        
-        // Build tree if needed
-        if (!tree_valid_) {
-            build_tree();
-        }
-        
-        // Reset counters
-        perf_stats_.force_calculations = 0;
-        perf_stats_.approximations_used = 0;
-        
-        // Calculate forces
-        calculate_forces_barnes_hut();
-        
-        auto end = std::chrono::high_resolution_clock::now();
-        float time_ms = std::chrono::duration<float, std::milli>(end - start).count();
-        
-        // Calculate metrics
-        size_t total_ops = perf_stats_.force_calculations + perf_stats_.approximations_used;
-        float efficiency = total_ops > 0 ? (float)perf_stats_.approximations_used / total_ops : 0.0f;
-        size_t brute_force_ops = particle_count_ * particle_count_;
-        float speedup = total_ops > 0 ? (float)brute_force_ops / total_ops : 0.0f;
-        
-        std::cout << "Theta " << theta << ":\n";
-        std::cout << "  Time: " << time_ms << " ms\n";
-        std::cout << "  Direct calculations: " << perf_stats_.force_calculations << "\n";
-        std::cout << "  Approximations: " << perf_stats_.approximations_used << "\n";
-        std::cout << "  Total operations: " << total_ops << "\n";
-        std::cout << "  Efficiency: " << (efficiency * 100.0f) << "% approximations\n";
-        std::cout << "  Speedup vs brute force: " << speedup << "x\n";
-        std::cout << "  Tree nodes: " << perf_stats_.tree_nodes_created << "\n";
-        std::cout << "  Tree depth: " << perf_stats_.tree_depth << "\n\n";
-    }
-    
-    // Restore original configuration
-    config_ = original_config;
-    tree_valid_ = false;  // Force rebuild with original theta
-    
-    std::cout << "Theta test complete. Original configuration restored.\n";
-    std::cout << "==============================\n\n";
-}
-
-void BarnesHutParticleSystem::diagnose_tree_traversal_bottleneck() const {
-    std::cout << "\n=== TREE TRAVERSAL BOTTLENECK ANALYSIS ===\n";
-    
-    if (particle_count_ == 0) {
-        std::cout << "No particles to analyze\n";
-        return;
-    }
-    
-    const auto& stats = get_performance_stats();
-    
-    // 1. Check for overlapping particles (major cause of deep trees)
-    std::cout << "1. CHECKING FOR OVERLAPPING PARTICLES:\n";
-    size_t overlap_count = 0;
-    size_t near_overlap_count = 0;
-    const double min_distance_sq = 1e-10;  // Essentially overlapping
-    const double near_distance_sq = 1e-6;   // Very close
-    
-    // Sample first 1000 particles to avoid O(N²) check on large datasets
-    size_t sample_size = std::min(particle_count_, size_t(1000));
-    
-    for (size_t i = 0; i < sample_size; ++i) {
-        for (size_t j = i + 1; j < sample_size; ++j) {
-            double dx = positions_x_[i] - positions_x_[j];
-            double dy = positions_y_[i] - positions_y_[j];
-            double dist_sq = dx * dx + dy * dy;
-            
-            if (dist_sq < min_distance_sq) {
-                overlap_count++;
-                if (overlap_count <= 5) {  // Show first few examples
-                    std::cout << "   ⚠️  OVERLAP: Particles " << i << " and " << j 
-                              << " at (" << positions_x_[i] << ", " << positions_y_[i] << ")\n";
-                }
-            } else if (dist_sq < near_distance_sq) {
-                near_overlap_count++;
-            }
-        }
-    }
-    
-    std::cout << "   Overlapping pairs (sample): " << overlap_count << "/" << (sample_size * (sample_size-1))/2 << "\n";
-    std::cout << "   Near-overlapping pairs: " << near_overlap_count << "\n";
-    
-    if (overlap_count > 0) {
-        std::cout << "   🚨 CRITICAL: Overlapping particles cause infinite subdivision!\n";
-    }
-    
-    // 2. Particle distribution analysis
-    std::cout << "\n2. PARTICLE DISTRIBUTION:\n";
-    double min_x = *std::min_element(positions_x_.begin(), positions_x_.begin() + particle_count_);
-    double max_x = *std::max_element(positions_x_.begin(), positions_x_.begin() + particle_count_);
-    double min_y = *std::min_element(positions_y_.begin(), positions_y_.begin() + particle_count_);
-    double max_y = *std::max_element(positions_y_.begin(), positions_y_.begin() + particle_count_);
-    
-    double range_x = max_x - min_x;
-    double range_y = max_y - min_y;
-    double total_area = range_x * range_y;
-    double density = particle_count_ / total_area;
-    
-    std::cout << "   X range: [" << min_x << ", " << max_x << "] = " << range_x << "\n";
-    std::cout << "   Y range: [" << min_y << ", " << max_y << "] = " << range_y << "\n";
-    std::cout << "   Particle density: " << density << " particles/unit²\n";
-    
-    if (range_x < 1e-6 || range_y < 1e-6) {
-        std::cout << "   🚨 CRITICAL: Particles collapsed to line/point!\n";
-    }
-    
-    // 3. Tree structure analysis
-    std::cout << "\n3. TREE STRUCTURE ISSUES:\n";
-    std::cout << "   Nodes created: " << stats.tree_nodes_created << "\n";
-    std::cout << "   Particles: " << particle_count_ << "\n";
-    std::cout << "   Nodes per particle: " << (float)stats.tree_nodes_created / particle_count_ << "\n";
-    std::cout << "   Tree depth: " << stats.tree_depth << " (limit: " << config_.tree_depth_limit << ")\n";
-    std::cout << "   Avg traversal depth: " << stats.avg_tree_depth_per_particle << "\n";
-    
-    if (stats.tree_depth >= config_.tree_depth_limit) {
-        std::cout << "   🚨 CRITICAL: Tree hitting depth limit - infinite subdivision!\n";
-    }
-    
-    if (stats.avg_tree_depth_per_particle > 100) {
-        std::cout << "   🚨 CRITICAL: Average traversal depth too high!\n";
-    }
-    
-    // 4. Performance ratios
-    std::cout << "\n4. PERFORMANCE RATIOS:\n";
-    float nodes_per_particle = (float)stats.tree_nodes_visited / particle_count_;
-    float theta_pass_ratio = stats.theta_pass_ratio;
-    
-    std::cout << "   Nodes visited per particle: " << nodes_per_particle << "\n";
-    std::cout << "   Theta pass ratio: " << (theta_pass_ratio * 100) << "%\n";
-    std::cout << "   Approximation ratio: " << (stats.efficiency_ratio * 100) << "%\n";
-    std::cout << "   Morton ordering: " << (morton_ordering_enabled_ ? "enabled" : "disabled") << "\n";
-    
-    if (nodes_per_particle > 100) {
-        std::cout << "   ⚠️  WARNING: Too many nodes visited per particle\n";
-    }
-    
-    if (theta_pass_ratio < 0.3) {
-        std::cout << "   ⚠️  WARNING: Low theta pass ratio - not using enough approximations\n";
-    }
-    
-    // 5. Recommendations
-    std::cout << "\n5. RECOMMENDATIONS:\n";
-    
-    if (overlap_count > 0) {
-        std::cout << "   🔧 Add particle separation/jitter to prevent overlaps\n";
-        std::cout << "   🔧 Implement minimum distance constraint\n";
-    }
-    
-    if (stats.tree_depth >= config_.tree_depth_limit) {
-        std::cout << "   🔧 Increase tree_depth_limit (current: " << config_.tree_depth_limit << ")\n";
-        std::cout << "   🔧 Or implement leaf node particle limits\n";
-    }
-    
-    if (theta_pass_ratio < 0.5) {
-        std::cout << "   🔧 Increase theta from " << config_.theta << " to 1.0+ for more approximations\n";
-    }
-    
-    if (density > 1000) {
-        std::cout << "   🔧 Particles too densely packed - spread them out\n";
-    }
-    
-    if (!morton_ordering_enabled_) {
-        std::cout << "   🔧 Enable Morton ordering for better cache locality\n";
-    }
-    
-    std::cout << "==========================================\n\n";
-}
-
-void BarnesHutParticleSystem::fix_overlapping_particles() {
-    std::cout << "🔧 FIXING OVERLAPPING PARTICLES (Basic)...\n";
-    
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<double> jitter(-0.001, 0.001);
-    
-    size_t fixes_applied = 0;
-    const double min_distance_sq = 1e-10;
-    
-    // Simple O(N²) fix for overlaps - only practical for smaller particle counts
-    for (size_t i = 0; i < particle_count_ && fixes_applied < 1000; ++i) {
-        for (size_t j = i + 1; j < particle_count_; ++j) {
-            double dx = positions_x_[i] - positions_x_[j];
-            double dy = positions_y_[i] - positions_y_[j];
-            double dist_sq = dx * dx + dy * dy;
-            
-            if (dist_sq < min_distance_sq) {
-                // Add small random jitter to separate particles
-                positions_x_[j] += jitter(gen);
-                positions_y_[j] += jitter(gen);
-                fixes_applied++;
-                
-                if (fixes_applied <= 10) {
-                    std::cout << "   Fixed overlap between particles " << i << " and " << j << "\n";
-                }
-            }
-        }
-    }
-    
-    if (fixes_applied > 0) {
-        std::cout << "✅ Applied " << fixes_applied << " particle separation fixes\n";
-        tree_valid_ = false;  // Force tree rebuild
-        if (morton_ordering_enabled_) {
-            particles_need_reordering_ = true;  // Mark for reordering after fixes
-        }
+    // NEW: Apply Morton reordering if needed and beneficial
+    if (morton_ordering_enabled_ && should_apply_morton_ordering()) {
+        auto morton_start = std::chrono::high_resolution_clock::now();
+        sort_by_morton_key();
+        auto morton_end = std::chrono::high_resolution_clock::now();
+        perf_stats_.morton_ordering_time_ms = std::chrono::duration<float, std::milli>(morton_end - morton_start).count();
+        perf_stats_.morton_ordering_applied = true;
     } else {
-        std::cout << "✅ No overlapping particles found\n";
-    }
-}
-
-void BarnesHutParticleSystem::fix_overlapping_particles_advanced() {
-    std::cout << "🔧 ADVANCED PARTICLE SEPARATION...\n";
-    
-    if (particle_count_ == 0) return;
-    
-    auto start_time = std::chrono::high_resolution_clock::now();
-    
-    const double min_separation = 1e-6;  // Minimum allowed distance
-    const double min_separation_sq = min_separation * min_separation;
-    
-    size_t fixes_applied = 0;
-    size_t iterations = 0;
-    const size_t max_iterations = 10;
-    
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<double> angle_dist(0.0, 2.0 * M_PI);
-    
-    // Use spatial hashing for efficient overlap detection
-    std::unordered_map<int64_t, std::vector<size_t>> spatial_hash;
-    const double cell_size = min_separation * 2.0;
-    
-    while (iterations < max_iterations) {
-        spatial_hash.clear();
-        size_t current_fixes = 0;
-        
-        // Hash particles into spatial grid
-        for (size_t i = 0; i < particle_count_; ++i) {
-            int64_t cell_x = static_cast<int64_t>(positions_x_[i] / cell_size);
-            int64_t cell_y = static_cast<int64_t>(positions_y_[i] / cell_size);
-            int64_t cell_key = (cell_x << 32) | (cell_y & 0xFFFFFFFF);
-            spatial_hash[cell_key].push_back(i);
-        }
-        
-        // Check for overlaps within and between adjacent cells
-        for (const auto& [cell_key, particles] : spatial_hash) {
-            // Check particles within same cell
-            for (size_t i = 0; i < particles.size(); ++i) {
-                for (size_t j = i + 1; j < particles.size(); ++j) {
-                    size_t idx1 = particles[i];
-                    size_t idx2 = particles[j];
-                    
-                    double dx = positions_x_[idx1] - positions_x_[idx2];
-                    double dy = positions_y_[idx1] - positions_y_[idx2];
-                    double dist_sq = dx * dx + dy * dy;
-                    
-                    if (dist_sq < min_separation_sq && dist_sq > 0) {
-                        // Separate particles
-                        double angle = angle_dist(gen);
-                        double offset_x = min_separation * std::cos(angle) * 0.5;
-                        double offset_y = min_separation * std::sin(angle) * 0.5;
-                        
-                        positions_x_[idx1] += offset_x;
-                        positions_y_[idx1] += offset_y;
-                        positions_x_[idx2] -= offset_x;
-                        positions_y_[idx2] -= offset_y;
-                        
-                        current_fixes++;
-                    }
-                }
-            }
-        }
-        
-        fixes_applied += current_fixes;
-        iterations++;
-        
-        if (current_fixes == 0) {
-            std::cout << "   ✅ No more overlaps found after " << iterations << " iterations\n";
-            break;
-        }
+        perf_stats_.morton_ordering_time_ms = 0.0f;
+        perf_stats_.morton_ordering_applied = false;
     }
     
-    auto end_time = std::chrono::high_resolution_clock::now();
-    float fix_time = std::chrono::duration<float, std::milli>(end_time - start_time).count();
+    // ONLY do initial setup if forces haven't been calculated yet
+    // (For first frame or after major changes)
+    bool need_initial_forces = (iteration_count_ == 0) || 
+                               (std::all_of(forces_x_.begin(), forces_x_.begin() + particle_count_, 
+                                          [](float f) { return f == 0.0f; }));
     
-    std::cout << "✅ Particle separation complete in " << fix_time << " ms\n";
-    std::cout << "   - Fixed " << fixes_applied << " overlaps in " << iterations << " iterations\n";
-    std::cout << "   - Minimum separation: " << min_separation << " units\n\n";
-    
-    if (fixes_applied > 0) {
-        tree_valid_ = false;  // Force tree rebuild
-        if (morton_ordering_enabled_) {
-            particles_need_reordering_ = true;  // Mark for reordering after fixes
-        }
-    }
-}
-
-void BarnesHutParticleSystem::compact_tree_for_cache_efficiency() {
-    if (!tree_valid_ || tree_nodes_.empty()) return;
-    
-    std::cout << "🔧 COMPACTING TREE FOR CACHE EFFICIENCY...\n";
-    
-    auto start_time = std::chrono::high_resolution_clock::now();
-    
-    // Build a mapping of old node indices to new ones based on access patterns
-    std::vector<std::pair<uint32_t, uint32_t>> node_usage;  // (usage_count, old_index)
-    node_usage.reserve(next_free_node_);
-    
-    for (uint32_t i = 0; i < next_free_node_; ++i) {
-        // Estimate usage based on tree depth (deeper = less used)
-        uint32_t estimated_usage = (20 - tree_nodes_[i].depth) * 10;
-        if (tree_nodes_[i].is_leaf) estimated_usage += 50;  // Leaves are accessed more
-        
-        node_usage.emplace_back(estimated_usage, i);
-    }
-    
-    // Sort by usage (most used first for better cache locality)
-    std::sort(node_usage.rbegin(), node_usage.rend());
-    
-    // Create new compacted tree
-    std::vector<QuadTreeNode> compacted_nodes;
-    compacted_nodes.reserve(next_free_node_);
-    std::vector<uint32_t> old_to_new_mapping(next_free_node_);
-    
-    // Copy nodes in order of usage
-    for (uint32_t new_idx = 0; new_idx < next_free_node_; ++new_idx) {
-        uint32_t old_idx = node_usage[new_idx].second;
-        compacted_nodes.push_back(tree_nodes_[old_idx]);
-        old_to_new_mapping[old_idx] = new_idx;
-    }
-    
-    // Update child indices to point to new locations
-    for (auto& node : compacted_nodes) {
-        for (int i = 0; i < 4; ++i) {
-            if (node.children[i] != UINT32_MAX) {
-                node.children[i] = old_to_new_mapping[node.children[i]];
-            }
-        }
-    }
-    
-    // Update root index
-    root_node_index_ = old_to_new_mapping[root_node_index_];
-    
-    // Replace old tree with compacted one
-    tree_nodes_ = std::move(compacted_nodes);
-    
-    auto end_time = std::chrono::high_resolution_clock::now();
-    float compact_time = std::chrono::duration<float, std::milli>(end_time - start_time).count();
-    
-    std::cout << "✅ Tree compacted in " << compact_time << " ms\n";
-    std::cout << "   - Reorganized " << next_free_node_ << " nodes for better cache locality\n";
-    std::cout << "   - Most-accessed nodes moved to front of memory\n\n";
-}
-
-void BarnesHutParticleSystem::adaptive_theta_optimization() {
-    std::cout << "🔧 ADAPTIVE THETA OPTIMIZATION...\n";
-    
-    if (particle_count_ == 0) return;
-    
-    auto start_time = std::chrono::high_resolution_clock::now();
-    
-    // Test different theta values and pick optimal one
-    float original_theta = config_.theta;
-    float best_theta = original_theta;
-    float best_time = std::numeric_limits<float>::max();
-    
-    std::vector<float> test_thetas = {0.5f, 0.75f, 1.0f, 1.2f, 1.5f};
-    
-    std::cout << "   Testing theta values...\n";
-    
-    for (float theta : test_thetas) {
-        config_.theta = theta;
-        config_.theta_squared = theta * theta;
-        tree_valid_ = false;  // Force rebuild
-        
-        // Time a force calculation cycle
-        auto test_start = std::chrono::high_resolution_clock::now();
-        
-        if (!tree_valid_) build_tree();
-        
-        // Reset counters
-        perf_stats_.force_calculations = 0;
-        perf_stats_.approximations_used = 0;
-        
-        // Clear forces
+    if (need_initial_forces) {
+        // Initial force calculation for first step
         std::fill(forces_x_.begin(), forces_x_.begin() + particle_count_, 0.0);
         std::fill(forces_y_.begin(), forces_y_.begin() + particle_count_, 0.0);
         
+        calculate_bounds();
+        auto tree_start = std::chrono::high_resolution_clock::now();
+        build_tree();  // Initial tree build
+        auto tree_end = std::chrono::high_resolution_clock::now();
+        perf_stats_.tree_build_time_ms = std::chrono::duration<float, std::milli>(tree_end - tree_start).count();
+        perf_stats_.tree_was_rebuilt = true;
+        
+        auto force_start = std::chrono::high_resolution_clock::now();
         calculate_forces_barnes_hut();
-        
-        auto test_end = std::chrono::high_resolution_clock::now();
-        float test_time = std::chrono::duration<float, std::milli>(test_end - test_start).count();
-        
-        size_t total_ops = perf_stats_.force_calculations + perf_stats_.approximations_used;
-        float efficiency = total_ops > 0 ? (float)perf_stats_.approximations_used / total_ops : 0.0f;
-        
-        std::cout << "     θ=" << theta << ": " << test_time << "ms, " 
-                  << (efficiency * 100.0f) << "% approximations\n";
-        
-        // Score based on time and approximation ratio (we want fast + high approximation)
-        float score = test_time * (2.0f - efficiency);  // Lower is better
-        
-        if (score < best_time) {
-            best_time = score;
-            best_theta = theta;
-        }
+        auto force_end = std::chrono::high_resolution_clock::now();
+        perf_stats_.tree_traversal_time_ms = std::chrono::duration<float, std::milli>(force_end - force_start).count();
+    } else {
+        perf_stats_.tree_build_time_ms = 0.0f;
+        perf_stats_.tree_traversal_time_ms = 0.0f;
+        perf_stats_.tree_was_rebuilt = false;
     }
     
-    // Apply best theta
-    config_.theta = best_theta;
-    config_.theta_squared = best_theta * best_theta;
-    tree_valid_ = false;
+    // Verlet integration handles ALL the physics:
+    // - Position updates
+    // - Tree rebuilding at new positions  
+    // - Force recalculation
+    // - Final velocity updates
+    auto integration_start = std::chrono::high_resolution_clock::now();
+    integrate_verlet(dt);
+    auto integration_end = std::chrono::high_resolution_clock::now();
+    perf_stats_.integration_time_ms = std::chrono::duration<float, std::milli>(integration_end - integration_start).count();
     
-    auto end_time = std::chrono::high_resolution_clock::now();
-    float optimization_time = std::chrono::duration<float, std::milli>(end_time - start_time).count();
-    
-    std::cout << "✅ Adaptive theta optimization complete in " << optimization_time << " ms\n";
-    std::cout << "   - Original theta: " << original_theta << " → Optimal theta: " << best_theta << "\n";
-    std::cout << "   - Performance improvement expected\n\n";
-}
-
-void BarnesHutParticleSystem::run_comprehensive_optimization() {
-    std::cout << "\n🚀 RUNNING COMPREHENSIVE BARNES-HUT OPTIMIZATION\n";
-    std::cout << "=================================================\n";
-    
-    auto total_start = std::chrono::high_resolution_clock::now();
-    
-    // 1. Fix overlapping particles (critical for tree depth)
-    fix_overlapping_particles_advanced();
-    
-    // 2. Optimize particle layout with Morton ordering
-    optimize_particle_layout();
-    
-    // 3. Find optimal theta value
-    adaptive_theta_optimization();
-    
-    // 4. Compact tree for cache efficiency
-    if (tree_valid_) {
-        compact_tree_for_cache_efficiency();
-    }
-    
+    // Update performance stats
     auto total_end = std::chrono::high_resolution_clock::now();
-    float total_time = std::chrono::duration<float, std::milli>(total_end - total_start).count();
-    
-    std::cout << "🎯 COMPREHENSIVE OPTIMIZATION COMPLETE!\n";
-    std::cout << "Total optimization time: " << total_time << " ms\n";
-    std::cout << "=================================================\n\n";
-    
-    // Run a test to show improvement
-    std::cout << "🧪 Testing optimized performance...\n";
-    
-    auto test_start = std::chrono::high_resolution_clock::now();
-    
-    // Clear forces and calculate
-    std::fill(forces_x_.begin(), forces_x_.begin() + particle_count_, 0.0);
-    std::fill(forces_y_.begin(), forces_y_.begin() + particle_count_, 0.0);
-    
-    if (!tree_valid_) build_tree();
-    calculate_forces_barnes_hut();
-    
-    auto test_end = std::chrono::high_resolution_clock::now();
-    float test_time = std::chrono::duration<float, std::milli>(test_end - test_start).count();
-    
+    float total_frame_time = std::chrono::duration<float, std::milli>(total_end - start_time).count();
+    update_detailed_performance_stats(total_frame_time);
     update_performance_stats();
-    const auto& stats = get_performance_stats();
     
-    std::cout << "✅ Optimized performance test:\n";
-    std::cout << "   Force calculation: " << test_time << " ms\n";
-    std::cout << "   Tree depth: " << stats.tree_depth << "\n";
-    std::cout << "   Efficiency: " << (stats.efficiency_ratio * 100.0f) << "% approximations\n";
-    std::cout << "   Speedup vs brute force: " << stats.speedup_vs_brute_force << "x\n";
-    std::cout << "   Morton ordering: " << (morton_ordering_enabled_ ? "enabled" : "disabled") << "\n\n";
+    prepare_render_data();
+    
+    iteration_count_++;
+     
+    PhysicsUpdateEvent physics_event{dt, particle_count_, iteration_count_};
+    event_bus_.emit(Events::PHYSICS_UPDATE, physics_event);
+    
+    RenderUpdateEvent render_event{
+        render_positions_.data(), 
+        render_colors_.data(), 
+        particle_count_,
+        static_cast<float>(bounds_min_x_), static_cast<float>(bounds_max_x_),
+        static_cast<float>(bounds_min_y_), static_cast<float>(bounds_max_y_)
+    };
+    event_bus_.emit(Events::RENDER_UPDATE, render_event);
 }
 
 
 #ifdef BH_TESTING
 struct BHTestHooks {
   struct Snapshot {
-    // Public, copy-only snapshot of internals we need to verify
     std::vector<BarnesHutParticleSystem::QuadTreeNode> nodes;
     uint32_t root;
     std::vector<uint32_t> leaf_offset, leaf_count, leaf_idx, particle_leaf_slot;
@@ -2603,7 +1658,6 @@ struct BHTestHooks {
     return out;
   }
   
-  // Safe entry to the private leaf NEON kernel for correctness tests
   static void leaf_neon(const BarnesHutParticleSystem& s,
                         const BarnesHutParticleSystem::QuadTreeNode& node,
                         int i_local, float px, float py, float gi,
