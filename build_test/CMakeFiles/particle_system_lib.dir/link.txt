@@ -1,0 +1,2 @@
+/usr/bin/ar qc libparticle_system_lib.a CMakeFiles/particle_system_lib.dir/src/BarnesHutParticleSystem.cpp.o CMakeFiles/particle_system_lib.dir/src/GalaxyFactory.cpp.o
+/usr/bin/ranlib libparticle_system_lib.a

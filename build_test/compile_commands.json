@@ -1,0 +1,110 @@
+[
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DOPENMP_ENABLED -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -Xpreprocessor -fopenmp -march=armv8-a -o CMakeFiles/particle_system_lib.dir/src/BarnesHutParticleSystem.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/src/BarnesHutParticleSystem.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/src/BarnesHutParticleSystem.cpp",
+  "output": "CMakeFiles/particle_system_lib.dir/src/BarnesHutParticleSystem.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DOPENMP_ENABLED -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -Xpreprocessor -fopenmp -march=armv8-a -o CMakeFiles/particle_system_lib.dir/src/GalaxyFactory.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/src/GalaxyFactory.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/src/GalaxyFactory.cpp",
+  "output": "CMakeFiles/particle_system_lib.dir/src/GalaxyFactory.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DBH_TESTING=1 -DGTEST_HAS_PTHREAD=1 -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/Users/luke/Projects/refactorBarnesHuttMrkIII/src -I/Users/luke/Projects/refactorBarnesHuttMrkIII/tests -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -march=armv8-a -Xpreprocessor -fopenmp -o CMakeFiles/bh_tests.dir/tests/NeonVsScalarCorrectnessTests.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/tests/NeonVsScalarCorrectnessTests.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/tests/NeonVsScalarCorrectnessTests.cpp",
+  "output": "CMakeFiles/bh_tests.dir/tests/NeonVsScalarCorrectnessTests.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DBH_TESTING=1 -DGTEST_HAS_PTHREAD=1 -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/Users/luke/Projects/refactorBarnesHuttMrkIII/src -I/Users/luke/Projects/refactorBarnesHuttMrkIII/tests -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -march=armv8-a -Xpreprocessor -fopenmp -o CMakeFiles/bh_tests.dir/tests/TraversalMetamorphicTests.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/tests/TraversalMetamorphicTests.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/tests/TraversalMetamorphicTests.cpp",
+  "output": "CMakeFiles/bh_tests.dir/tests/TraversalMetamorphicTests.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DBH_TESTING=1 -DGTEST_HAS_PTHREAD=1 -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/Users/luke/Projects/refactorBarnesHuttMrkIII/src -I/Users/luke/Projects/refactorBarnesHuttMrkIII/tests -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -march=armv8-a -Xpreprocessor -fopenmp -o CMakeFiles/bh_tests.dir/tests/tests_main.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/tests/tests_main.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/tests/tests_main.cpp",
+  "output": "CMakeFiles/bh_tests.dir/tests/tests_main.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DBH_TESTING=1 -DGTEST_HAS_PTHREAD=1 -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/Users/luke/Projects/refactorBarnesHuttMrkIII/src -I/Users/luke/Projects/refactorBarnesHuttMrkIII/tests -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -isystem /opt/homebrew/include -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -march=armv8-a -Xpreprocessor -fopenmp -o CMakeFiles/bh_tests.dir/tests/treeInvariantTests.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/tests/treeInvariantTests.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/tests/treeInvariantTests.cpp",
+  "output": "CMakeFiles/bh_tests.dir/tests/treeInvariantTests.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -x objective-c++  -fobjc-arc -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -fobjc-arc -o CMakeFiles/BarnesHutMrkII.dir/src/main.mm.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/src/main.mm",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/src/main.mm",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/src/main.mm.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -o CMakeFiles/BarnesHutMrkII.dir/src/BarnesHutParticleSystem.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/src/BarnesHutParticleSystem.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/src/BarnesHutParticleSystem.cpp",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/src/BarnesHutParticleSystem.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -x objective-c++  -fobjc-arc -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -fobjc-arc -o CMakeFiles/BarnesHutMrkII.dir/src/MetalRenderer.mm.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/src/MetalRenderer.mm",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/src/MetalRenderer.mm",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/src/MetalRenderer.mm.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -x objective-c++  -fobjc-arc -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -o CMakeFiles/BarnesHutMrkII.dir/src/ImGuiInterface.mm.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/src/ImGuiInterface.mm",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/src/ImGuiInterface.mm",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/src/ImGuiInterface.mm.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -o CMakeFiles/BarnesHutMrkII.dir/src/GalaxyFactory.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/src/GalaxyFactory.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/src/GalaxyFactory.cpp",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/src/GalaxyFactory.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -o CMakeFiles/BarnesHutMrkII.dir/libs/imgui/imgui.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/imgui.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/imgui.cpp",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/libs/imgui/imgui.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -o CMakeFiles/BarnesHutMrkII.dir/libs/imgui/imgui_demo.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/imgui_demo.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/imgui_demo.cpp",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/libs/imgui/imgui_demo.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -o CMakeFiles/BarnesHutMrkII.dir/libs/imgui/imgui_draw.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/imgui_draw.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/imgui_draw.cpp",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/libs/imgui/imgui_draw.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -o CMakeFiles/BarnesHutMrkII.dir/libs/imgui/imgui_tables.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/imgui_tables.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/imgui_tables.cpp",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/libs/imgui/imgui_tables.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -o CMakeFiles/BarnesHutMrkII.dir/libs/imgui/imgui_widgets.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/imgui_widgets.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/imgui_widgets.cpp",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/libs/imgui/imgui_widgets.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -o CMakeFiles/BarnesHutMrkII.dir/libs/imgui/backends/imgui_impl_glfw.cpp.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends/imgui_impl_glfw.cpp",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends/imgui_impl_glfw.cpp",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/libs/imgui/backends/imgui_impl_glfw.cpp.o"
+},
+{
+  "directory": "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test",
+  "command": "/usr/bin/c++ -DEIGEN_DONT_PARALLELIZE -DEIGEN_NO_DEBUG -DNDEBUG -DNO_DEBUG_OUTPUT -DOPENMP_ENABLED -DPERFORMANCE_BUILD -I/Users/luke/Projects/refactorBarnesHuttMrkIII/header -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui -I/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends -I/opt/homebrew/include/eigen3 -I/opt/homebrew/include -I/opt/homebrew/opt/libomp/include -F/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks -x objective-c++  -fobjc-arc -O3 -g -fno-math-errno -ffp-contract=fast  -std=gnu++17 -arch arm64 -O3 -g -fno-math-errno -ffp-contract=fast -fvectorize -fslp-vectorize -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize -fsave-optimization-record -foptimization-record-passes=loop-vectorize,slp-vectorize -Xpreprocessor -fopenmp -Wno-everything -fobjc-arc -o CMakeFiles/BarnesHutMrkII.dir/libs/imgui/backends/imgui_impl_metal.mm.o -c /Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends/imgui_impl_metal.mm",
+  "file": "/Users/luke/Projects/refactorBarnesHuttMrkIII/libs/imgui/backends/imgui_impl_metal.mm",
+  "output": "CMakeFiles/BarnesHutMrkII.dir/libs/imgui/backends/imgui_impl_metal.mm.o"
+}
+]

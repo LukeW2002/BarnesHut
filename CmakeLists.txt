@@ -1,0 +1,521 @@
+cmake_minimum_required(VERSION 3.15)
+project(BarnesHutMrkII)
+
+# Enable Objective-C++ support
+enable_language(OBJCXX)
+
+# Standards
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_OBJCXX_STANDARD 17)
+set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+
+# AGGRESSIVE OPTIMIZATION FLAGS
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -mcpu=apple-m1 -fno-math-errno -flto -ffast-math -funroll-loops -fno-omit-frame-pointer -Wno-attribute-warning -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize")
+set(CMAKE_OBJCXX_FLAGS_RELEASE "-O3 -DNDEBUG -mcpu=apple-m1 -flto -ffast-math -funroll-loops -fno-omit-frame-pointer")
+set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto -Wl,-dead_strip")
+
+# Debug with profiling symbols but still some optimization
+set(CMAKE_CXX_FLAGS_DEBUG "-O1 -g -fno-omit-frame-pointer -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize")
+set(CMAKE_OBJCXX_FLAGS_DEBUG "-O1 -g -fno-omit-frame-pointer -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize")
+
+# RelWithDebInfo - optimized but with debug symbols (best for profiling)
+set(CMAKE_CXX_FLAGS_RELWITHDEBINFO   "-O3 -g -fno-math-errno -ffp-contract=fast ")
+set(CMAKE_OBJCXX_FLAGS_RELWITHDEBINFO "-O3 -g -fno-math-errno -ffp-contract=fast ")
+
+# Default to Release if not specified
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+    message(STATUS "No build type specified, defaulting to Release")
+endif()
+
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "Optimization level: AGGRESSIVE")
+
+# Ensure Eigen include path (adjust for Intel Homebrew if needed)
+if(NOT EIGEN3_INCLUDE_DIR)
+  set(EIGEN3_INCLUDE_DIR "/opt/homebrew/include/eigen3" CACHE PATH "Eigen3 include dir")
+endif()
+if(NOT EXISTS "${EIGEN3_INCLUDE_DIR}/Eigen/Dense")
+  message(FATAL_ERROR "Eigen not found at ${EIGEN3_INCLUDE_DIR}. Try -DEIGEN3_INCLUDE_DIR=/usr/local/include/eigen3 on Intel Homebrew.")
+endif()
+
+# macOS frameworks
+if(APPLE)
+  set(CMAKE_OBJCXX_FLAGS "${CMAKE_OBJCXX_FLAGS} -fobjc-arc")
+  find_library(METAL_FRAMEWORK Metal REQUIRED)
+  find_library(METALKIT_FRAMEWORK MetalKit REQUIRED)
+  find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+  find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
+  find_library(QUARTZ_CORE_FRAMEWORK QuartzCore REQUIRED)
+
+  message(STATUS "Found Metal framework: ${METAL_FRAMEWORK}")
+  message(STATUS "Found MetalKit framework: ${METALKIT_FRAMEWORK}")
+endif()
+
+# GLFW (Homebrew paths)
+if(APPLE)
+  set(GLFW_ROOT "/opt/homebrew" "/usr/local")
+  find_path(GLFW_INCLUDE_DIR NAMES GLFW/glfw3.h PATHS ${GLFW_ROOT} PATH_SUFFIXES include NO_DEFAULT_PATH)
+  find_library(GLFW_LIBRARY NAMES glfw glfw3 PATHS ${GLFW_ROOT} PATH_SUFFIXES lib NO_DEFAULT_PATH)
+  if(NOT GLFW_INCLUDE_DIR OR NOT GLFW_LIBRARY)
+    message(FATAL_ERROR "GLFW not found. brew install glfw")
+  endif()
+  message(STATUS "Found GLFW: ${GLFW_LIBRARY}")
+  message(STATUS "GLFW include dir: ${GLFW_INCLUDE_DIR}")
+else()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(GLFW3 REQUIRED glfw3)
+endif()
+
+# ImGui
+set(IMGUI_DIR "${CMAKE_SOURCE_DIR}/libs/imgui")
+if(NOT EXISTS ${IMGUI_DIR})
+  message(FATAL_ERROR "ImGui not found at ${IMGUI_DIR}")
+endif()
+set(IMGUI_SOURCES
+  ${IMGUI_DIR}/imgui.cpp
+  ${IMGUI_DIR}/imgui_demo.cpp
+  ${IMGUI_DIR}/imgui_draw.cpp
+  ${IMGUI_DIR}/imgui_tables.cpp
+  ${IMGUI_DIR}/imgui_widgets.cpp
+  ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+  ${IMGUI_DIR}/backends/imgui_impl_metal.mm
+)
+
+# Include dirs (target-wide)
+include_directories(
+  header
+  ${IMGUI_DIR}
+  ${IMGUI_DIR}/backends
+  ${EIGEN3_INCLUDE_DIR}
+)
+if(APPLE)
+  include_directories(${GLFW_INCLUDE_DIR})
+else()
+  include_directories(${GLFW3_INCLUDE_DIRS})
+endif()
+
+# REFACTORED SOURCES - Updated for new structure
+set(SOURCES
+  src/main.mm
+  src/BarnesHutParticleSystem.cpp
+  src/MetalRenderer.mm
+  src/ImGuiInterface.mm
+  src/GalaxyFactory.cpp
+  ${IMGUI_SOURCES}
+)
+
+set(HEADERS
+  header/BarnesHutParticleSystem.h
+  header/MetalRenderer.h
+  header/EventSystem.h
+  header/Vec2.h
+  header/ImGuiInterface.h
+  header/GalaxyFactory.h
+)
+
+add_executable(${PROJECT_NAME} ${SOURCES} ${HEADERS})
+target_compile_options(${PROJECT_NAME} PRIVATE
+  $<$<AND:$<CONFIG:RelWithDebInfo>,$<COMPILE_LANGUAGE:CXX>>:
+    -O3 -g
+    -fno-math-errno -ffp-contract=fast
+    -fvectorize -fslp-vectorize
+    -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize
+    -fsave-optimization-record
+    -foptimization-record-passes=loop-vectorize,slp-vectorize
+  >
+  $<$<AND:$<CONFIG:RelWithDebInfo>,$<COMPILE_LANGUAGE:OBJCXX>>:
+    -O3 -g
+    -fno-math-errno -ffp-contract=fast
+    -fvectorize -fslp-vectorize
+    -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize
+    -fsave-optimization-record
+    -foptimization-record-passes=loop-vectorize,slp-vectorize
+  >
+)
+
+# ARC flags for ObjC++ sources
+set_source_files_properties(src/main.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+set_source_files_properties(src/MetalRenderer.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+set_source_files_properties(src/MetalWrapper.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+set_source_files_properties(${IMGUI_DIR}/backends/imgui_impl_metal.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+
+# Link frameworks / libs
+if(APPLE)
+  target_link_libraries(${PROJECT_NAME} PRIVATE
+    ${GLFW_LIBRARY}
+    ${METAL_FRAMEWORK}
+    ${METALKIT_FRAMEWORK}
+    ${FOUNDATION_FRAMEWORK}
+    ${COCOA_FRAMEWORK}
+    ${QUARTZ_CORE_FRAMEWORK}
+  )
+else()
+  target_link_libraries(${PROJECT_NAME} PRIVATE ${GLFW3_LIBRARIES})
+endif()
+
+option(ENABLE_OPENMP "Enable OpenMP parallelism" ON)
+
+set(OPENMP_STATUS "NO")
+set(OPENMP_DETAIL "not requested")
+
+if(ENABLE_OPENMP)
+  set(OPENMP_DETAIL "requested")
+  find_package(OpenMP QUIET)
+
+  if(OpenMP_CXX_FOUND)
+    target_link_libraries(${PROJECT_NAME} PUBLIC OpenMP::OpenMP_CXX)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE OPENMP_ENABLED)
+    set(OPENMP_STATUS "YES")
+    set(OPENMP_DETAIL "OpenMP::OpenMP_CXX")
+    message(STATUS "OpenMP: Using system OpenMP")
+  elseif(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+    message(STATUS "OpenMP not provided by AppleClang; searching for Homebrew libomp...")
+
+    set(_BREW_OMP_HINTS
+      "/opt/homebrew/opt/libomp"
+      "/usr/local/opt/libomp"
+      "/opt/homebrew" "/usr/local"
+    )
+
+    find_path(OMP_INCLUDE_DIR
+      NAMES omp.h
+      HINTS ${_BREW_OMP_HINTS}
+      PATH_SUFFIXES include
+    )
+    find_library(OMP_LIB
+      NAMES omp
+      HINTS ${_BREW_OMP_HINTS}
+      PATH_SUFFIXES lib
+    )
+
+    if(OMP_INCLUDE_DIR AND OMP_LIB)
+      get_filename_component(OMP_LIB_DIR "${OMP_LIB}" DIRECTORY)
+
+      target_include_directories(${PROJECT_NAME} PUBLIC "${OMP_INCLUDE_DIR}")
+      target_link_libraries(${PROJECT_NAME} PUBLIC "${OMP_LIB}")
+      target_compile_options(${PROJECT_NAME} PUBLIC -Xpreprocessor -fopenmp)
+      target_compile_options(${PROJECT_NAME} PRIVATE -Wno-everything)
+      target_link_options(${PROJECT_NAME} PUBLIC -Xpreprocessor -fopenmp "-Wl,-rpath,${OMP_LIB_DIR}")
+
+      set_property(GLOBAL PROPERTY OMP_INCLUDE_DIR "${OMP_INCLUDE_DIR}")
+      set_property(GLOBAL PROPERTY OMP_LIB "${OMP_LIB}")
+      set_property(GLOBAL PROPERTY OMP_LIB_DIR "${OMP_LIB_DIR}")
+
+      target_compile_definitions(${PROJECT_NAME} PRIVATE OPENMP_ENABLED)
+      set(OPENMP_STATUS "YES")
+      set(OPENMP_DETAIL "Homebrew libomp at ${OMP_LIB}")
+      message(STATUS "OpenMP: Using Homebrew libomp (${OMP_LIB})")
+    else()
+      set(OPENMP_STATUS "NO")
+      set(OPENMP_DETAIL "not found")
+      message(WARNING "OpenMP not found. Install with: brew install libomp")
+      message(WARNING "Then rebuild: rm -rf build && cmake -S . -B build && cmake --build build -j")
+    endif()
+  else()
+    set(OPENMP_STATUS "NO")
+    set(OPENMP_DETAIL "not found")
+    message(WARNING "OpenMP requested but not found; building single-threaded.")
+  endif()
+endif()
+
+# EIGEN OPTIMIZATION
+target_compile_definitions(${PROJECT_NAME} PRIVATE 
+    EIGEN_NO_DEBUG
+    EIGEN_DONT_PARALLELIZE
+    NDEBUG
+)
+
+# ADDITIONAL PERFORMANCE OPTIMIZATIONS
+if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        PERFORMANCE_BUILD
+        NO_DEBUG_OUTPUT
+    )
+    
+    if(APPLE)
+        target_compile_options(${PROJECT_NAME} PRIVATE
+            -fvectorize
+            -fslp-vectorize
+            -ffp-contract=fast
+        )
+    endif()
+endif()
+
+# LINK-TIME OPTIMIZATION
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set_property(TARGET ${PROJECT_NAME} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    message(STATUS "Link-time optimization: ENABLED")
+endif()
+
+target_compile_definitions(${PROJECT_NAME} PRIVATE $<$<CONFIG:Debug>:DEBUG>)
+
+if(NOT APPLE)
+  target_compile_options(${PROJECT_NAME} PRIVATE ${GLFW3_CFLAGS_OTHER})
+endif()
+
+# PERFORMANCE BUILD TARGET
+add_custom_target(performance
+    COMMAND ${CMAKE_COMMAND} -DCMAKE_BUILD_TYPE=Release ${CMAKE_SOURCE_DIR}
+    COMMAND ${CMAKE_COMMAND} --build . --config Release -j
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    COMMENT "Building MAXIMUM PERFORMANCE version..."
+)
+
+# AUTO-DISCOVERY TESTING SYSTEM
+option(BUILD_TESTS "Build and run tests automatically" ON)
+option(RUN_TESTS_AFTER_BUILD "Run tests immediately after successful build" ON)
+
+if(BUILD_TESTS)
+    message(STATUS "Test discovery enabled")
+    
+    find_package(GTest QUIET)
+    
+    if(NOT GTest_FOUND)
+        if(APPLE)
+            set(GTEST_ROOT "/opt/homebrew/opt/googletest" "/usr/local/opt/googletest")
+            find_path(GTEST_INCLUDE_DIR 
+                NAMES gtest/gtest.h 
+                PATHS ${GTEST_ROOT}
+                PATH_SUFFIXES include
+                NO_DEFAULT_PATH
+            )
+            find_library(GTEST_LIBRARY 
+                NAMES gtest 
+                PATHS ${GTEST_ROOT}
+                PATH_SUFFIXES lib
+                NO_DEFAULT_PATH
+            )
+            find_library(GTEST_MAIN_LIBRARY 
+                NAMES gtest_main 
+                PATHS ${GTEST_ROOT}
+                PATH_SUFFIXES lib
+                NO_DEFAULT_PATH
+            )
+            
+            if(GTEST_INCLUDE_DIR AND GTEST_LIBRARY AND GTEST_MAIN_LIBRARY)
+                message(STATUS "Found GoogleTest via Homebrew: ${GTEST_LIBRARY}")
+                set(GTest_FOUND TRUE)
+            endif()
+        endif()
+        
+        if(NOT GTest_FOUND)
+            message(WARNING "GoogleTest not found. Install with: brew install googletest")
+            message(WARNING "Tests will be skipped")
+            set(BUILD_TESTS OFF)
+        endif()
+    endif()
+endif()
+
+if(BUILD_TESTS AND GTest_FOUND)
+    enable_testing()
+    
+    file(GLOB_RECURSE TEST_SOURCES 
+        "tests/*.cpp"
+        "tests/*.mm"
+    )
+    
+    message(STATUS "Discovered test files:")
+    foreach(test_file ${TEST_SOURCES})
+        get_filename_component(test_name ${test_file} NAME)
+        message(STATUS "  ${test_name}")
+    endforeach()
+    
+    if(TEST_SOURCES)
+        add_executable(bh_tests ${TEST_SOURCES})
+        
+        target_compile_features(bh_tests PRIVATE cxx_std_17)
+        
+        target_compile_definitions(bh_tests PRIVATE 
+            BH_TESTING=1
+            GTEST_HAS_PTHREAD=1
+        )
+        
+        target_include_directories(bh_tests PRIVATE 
+            header
+            src
+            tests
+            ${EIGEN3_INCLUDE_DIR}
+        )
+        
+        # FIXED: Handle both modern imported targets and legacy variables
+        if(TARGET GTest::gtest AND TARGET GTest::gtest_main)
+            # Modern CMake targets (preferred)
+            message(STATUS "Using modern GTest targets: GTest::gtest, GTest::gtest_main")
+            target_link_libraries(bh_tests PRIVATE 
+                GTest::gtest
+                GTest::gtest_main
+            )
+        elseif(GTEST_LIBRARY AND GTEST_MAIN_LIBRARY)
+            # Legacy variables (Homebrew fallback)
+            message(STATUS "Using legacy GTest variables: ${GTEST_LIBRARY}, ${GTEST_MAIN_LIBRARY}")
+            target_include_directories(bh_tests PRIVATE ${GTEST_INCLUDE_DIR})
+            target_link_libraries(bh_tests PRIVATE 
+                ${GTEST_LIBRARY}
+                ${GTEST_MAIN_LIBRARY}
+                pthread
+            )
+        else()
+            message(FATAL_ERROR "GTest found but no usable targets or libraries available")
+        endif()
+        
+        set(PARTICLE_SYSTEM_SOURCES
+            src/BarnesHutParticleSystem.cpp
+            src/GalaxyFactory.cpp
+        )
+        
+        add_library(particle_system_lib STATIC ${PARTICLE_SYSTEM_SOURCES})
+        target_include_directories(particle_system_lib PUBLIC 
+            header 
+            ${EIGEN3_INCLUDE_DIR}
+        )
+        target_compile_features(particle_system_lib PRIVATE cxx_std_17)
+        
+        # Link OpenMP to library if available
+        if(ENABLE_OPENMP)
+            if(OpenMP_CXX_FOUND)
+                target_link_libraries(particle_system_lib PUBLIC OpenMP::OpenMP_CXX)
+                target_compile_definitions(particle_system_lib PRIVATE OPENMP_ENABLED)
+            elseif(OMP_LIB)
+                target_include_directories(particle_system_lib PUBLIC "${OMP_INCLUDE_DIR}")
+                target_link_libraries(particle_system_lib PUBLIC "${OMP_LIB}")
+                target_compile_options(particle_system_lib PUBLIC -Xpreprocessor -fopenmp)
+                target_link_options(particle_system_lib PUBLIC -Xpreprocessor -fopenmp "-Wl,-rpath,${OMP_LIB_DIR}")
+                target_compile_definitions(particle_system_lib PRIVATE OPENMP_ENABLED)
+            endif()
+        endif()
+        
+        target_link_libraries(bh_tests PRIVATE particle_system_lib)
+        
+        if(APPLE)
+            target_link_libraries(bh_tests PRIVATE
+                ${FOUNDATION_FRAMEWORK}
+                ${COCOA_FRAMEWORK}
+            )
+        endif()
+        
+        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+            target_compile_options(bh_tests PRIVATE 
+                -g -O0 
+                -Wall -Wextra -Wpedantic
+                -fsanitize=address,undefined
+                -fno-omit-frame-pointer
+            )
+            target_link_options(bh_tests PRIVATE 
+                -fsanitize=address,undefined
+            )
+        endif()
+        
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64" OR CMAKE_OSX_ARCHITECTURES MATCHES "arm64")
+            target_compile_options(bh_tests PRIVATE -march=armv8-a)
+            target_compile_options(particle_system_lib PRIVATE -march=armv8-a)
+        endif()
+        
+        include(GoogleTest)
+        gtest_discover_tests(bh_tests
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            DISCOVERY_TIMEOUT 30
+        )
+        
+        # Test categories
+        add_custom_target(test_tree_structure
+            COMMAND bh_tests --gtest_filter="Tree.*"
+            DEPENDS bh_tests
+            COMMENT "Running tree structure tests"
+        )
+        
+        add_custom_target(test_traversal
+            COMMAND bh_tests --gtest_filter="Traversal.*:*Correctness*" 
+            DEPENDS bh_tests
+            COMMENT "Running traversal correctness tests"
+        )
+        
+        add_custom_target(test_neon
+            COMMAND bh_tests --gtest_filter="*NEON*:*Neon*:*neon*"
+            DEPENDS bh_tests
+            COMMENT "Running NEON optimization tests"
+        )
+        
+        add_custom_target(test_critical
+            COMMAND bh_tests --gtest_filter="*Morton*:*Threading*:*Memory*:*Robustness*"
+            DEPENDS bh_tests
+            COMMENT "Running critical bug detection tests"
+        )
+        
+        # Simple EventSystem stub
+        message(STATUS "Test executable configured: bh_tests")
+        
+        if(RUN_TESTS_AFTER_BUILD)
+            add_custom_command(TARGET bh_tests POST_BUILD
+                COMMAND echo "Running tests automatically..."
+                COMMAND $<TARGET_FILE:bh_tests> --gtest_color=yes --gtest_brief=1
+                COMMENT "Auto-running tests after build"
+                VERBATIM
+            )
+            
+            add_dependencies(${PROJECT_NAME} bh_tests)
+            
+            message(STATUS "Tests will run automatically after each build")
+        endif()
+        
+    else()
+        message(WARNING "No test files found in tests/ directory")
+    endif()
+    
+else()
+    message(STATUS "Tests disabled or GoogleTest not available")
+endif()
+
+# Test workflow targets
+add_custom_target(test_quick
+    COMMAND bh_tests --gtest_filter="-*Stress*:-*LargeScale*:-*Performance*" --gtest_brief=1
+    DEPENDS bh_tests
+    COMMENT "Running quick tests (excluding stress tests)"
+)
+
+add_custom_target(test_comprehensive  
+    COMMAND bh_tests --gtest_color=yes
+    DEPENDS bh_tests
+    COMMENT "Running all tests with detailed output"
+)
+
+if(BUILD_TESTS AND TARGET bh_tests)
+    message(STATUS "")
+    message(STATUS "TEST TARGETS AVAILABLE:")
+    message(STATUS "  make test_quick         - Fast tests only")
+    message(STATUS "  make test_comprehensive - All tests with details")
+    message(STATUS "  make test_tree_structure - Tree validation tests")
+    message(STATUS "  make test_traversal     - Force calculation tests") 
+    message(STATUS "  make test_neon          - SIMD optimization tests")
+    message(STATUS "  make test_critical      - Critical bug detection")
+    message(STATUS "  ctest                   - Standard CTest runner")
+    if(RUN_TESTS_AFTER_BUILD)
+        message(STATUS "  Tests run automatically after each build")
+    endif()
+    message(STATUS "")
+endif()
+
+# Summary
+message(STATUS "")
+message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
+message(STATUS "Objective-C++ Standard: ${CMAKE_OBJCXX_STANDARD}")
+message(STATUS "Build Type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "Architecture: REFACTORED (ImGuiInterface + GalaxyFactory)")
+message(STATUS "Optimization: AGGRESSIVE (-O3 -march=native -flto)")
+if(APPLE)
+  message(STATUS "GLFW Library: ${GLFW_LIBRARY}")
+  message(STATUS "Metal Support: YES")
+else()
+  message(STATUS "GLFW: ${GLFW3_LIBRARIES}")
+  message(STATUS "Metal Support: NO")
+endif()
+message(STATUS "Eigen3: ${EIGEN3_INCLUDE_DIR}")
+message(STATUS "ImGui Directory: ${IMGUI_DIR}")
+message(STATUS "OpenMP Enabled: ${OPENMP_STATUS} (${OPENMP_DETAIL})")
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+  message(STATUS "Link-time Optimization: YES")
+  message(STATUS "Vectorization: YES")
+  message(STATUS "Fast Math: YES")
+endif()

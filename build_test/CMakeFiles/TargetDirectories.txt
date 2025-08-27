@@ -1,0 +1,13 @@
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/BarnesHutMrkII.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/performance.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/bh_tests.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/particle_system_lib.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/test_tree_structure.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/test_traversal.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/test_neon.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/test_critical.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/test_quick.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/test_comprehensive.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/test.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/edit_cache.dir
+/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/CMakeFiles/rebuild_cache.dir
