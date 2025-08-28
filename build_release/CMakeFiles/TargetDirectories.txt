@@ -1,6 +1,0 @@
-/Users/luke/Projects/refactorBarnesHuttMrkIII/build_release/CMakeFiles/BarnesHutMrkII.dir
-/Users/luke/Projects/refactorBarnesHuttMrkIII/build_release/CMakeFiles/performance.dir
-/Users/luke/Projects/refactorBarnesHuttMrkIII/build_release/CMakeFiles/test_quick.dir
-/Users/luke/Projects/refactorBarnesHuttMrkIII/build_release/CMakeFiles/test_comprehensive.dir
-/Users/luke/Projects/refactorBarnesHuttMrkIII/build_release/CMakeFiles/edit_cache.dir
-/Users/luke/Projects/refactorBarnesHuttMrkIII/build_release/CMakeFiles/rebuild_cache.dir
