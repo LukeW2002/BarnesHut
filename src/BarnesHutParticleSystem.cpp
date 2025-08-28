@@ -350,10 +350,27 @@ void BarnesHutParticleSystem::check_for_morton_reordering_need() {
 //===========================================================================================
 //==                                   TREE BUILDING                                       ==
 //===========================================================================================
-
 void BarnesHutParticleSystem::build_tree() {
+    /*
+     * Build a Barnes–Hut quadtree over current particles using Morton-ordered ranges.
+     *  1) Reset state & early-out when N == 0.
+     *  2) Clear/resize leaf buffers; reserve by estimated leaf count.
+     *  3) Sort particles by Morton key (near-O(N) radix sort; small-N fallback).
+     *  4) Reserve node capacity; create root from world bounds; seed build stack.
+     *  5) Iterative subdivision:
+     *     - If (count <= max_particles_per_leaf) or (depth >= tree_depth_limit): emit leaf:
+     *       pack particles into compact leaf arrays, set leaf_first/leaf_last, map particle_leaf_slot_.
+     *     - Else: internal node:
+     *       split [first,last] into 4 contiguous Morton subranges (SW,SE,NW,NE),
+     *       create children with quadrant AABBs, and push ranges onto stack.
+     *  6) Bottom-up mass properties: center-of-mass (COM) and bounding radius for all nodes.
+     *  7) Snapshot previous positions and mark tree valid.
+     */
     auto total_start = std::chrono::high_resolution_clock::now();
 
+    // ── 1: Reset state (extract: reset_tree_state_for_build(N)) ───────────────
+    // Inputs (reads): particle_count_
+    // Outputs (writes): tree_nodes_.clear(), next_free_node_=0, tree_valid_ (possibly false), returns early if N==0
     tree_nodes_.clear();
     next_free_node_ = 0;
 
@@ -363,6 +380,11 @@ void BarnesHutParticleSystem::build_tree() {
         return;
     }
     
+    // ── 2: Clear + reserve leaf buffers (extract: prepare_leaf_buffers(N)) ────
+    // Inputs (reads): config_.max_particles_per_leaf, N
+    // Outputs (writes): leaf_pos_x_/y_/mass_/idx_.clear()+reserve(N),
+    //                   leaf_offset_/leaf_count_.clear()+reserve(est_leaves),
+    //                   particle_leaf_slot_.resize(N)
     leaf_pos_x_.clear();   
     leaf_pos_y_.clear();   
     leaf_mass_.clear();    
@@ -382,8 +404,16 @@ void BarnesHutParticleSystem::build_tree() {
 
     particle_leaf_slot_.resize(N);
 
+    // ── 3: Morton ordering (already a helper: sort_by_morton_key()) ──────────
+    // Inputs (reads): positions_x_/positions_y_, bounds_min/max_{x,y}, maybe masses_ (if key uses them? usually no)
+    // Outputs (writes): morton_indices_ (permutes global indices), morton_keys_ (if stored), internal sort buffers
     sort_by_morton_key();
 
+    // ── 4: Reserve nodes + init root & build stack (init_root_and_stack) ─────
+    // Inputs (reads): N, config_.max_particles_per_leaf, bounds_min/max_{x,y}
+    // Outputs (writes): tree_nodes_.reserve(estimated_nodes),
+    //                   root_node_index_, tree_nodes_[root] (AABB, depth, children=UINT32_MAX),
+    //                   node_stack_.clear(); node_stack_.push_back(root range)
     const int leaf_cap = std::clamp<int>(static_cast<int>(config_.max_particles_per_leaf), 1, 64);
     size_t estimated_nodes = std::max<size_t>(64, (N * 8) / std::max(1, leaf_cap));
     tree_nodes_.reserve(estimated_nodes);
@@ -403,6 +433,11 @@ void BarnesHutParticleSystem::build_tree() {
     node_stack_.clear();  
     node_stack_.emplace_back(root_node_index_, 0, N - 1, 0);
 
+    // ── 5: Iterative subdivision (core loop) ─────────────────────────────────
+    // Inputs (reads): node_stack_, morton_indices_, config_{max_particles_per_leaf, tree_depth_limit}
+    // Outputs (writes): tree_nodes_ (node fields, children[]),
+    //                   leaf_* arrays and particle_leaf_slot_ (on leaf path),
+    //                   node_stack_ pushes (on internal path)
     while (!node_stack_.empty()) {
         auto item = node_stack_.back();  
         node_stack_.pop_back();
@@ -411,11 +446,23 @@ void BarnesHutParticleSystem::build_tree() {
         node.depth = static_cast<uint16_t>(item.depth);
 
         const size_t count = item.last - item.first + 1;
+
+        // (micro-) Leaf decision predicate (should_make_leaf(count, depth))
+        // Inputs (reads): count, item.depth, config_.max_particles_per_leaf, config_.tree_depth_limit
+        // Outputs (writes): none (local bool)
         const size_t leaf_threshold_local = std::clamp<size_t>(config_.max_particles_per_leaf, 1, 64);
         bool should_be_leaf = (count <= leaf_threshold_local) || 
                              (item.depth >= static_cast<int>(config_.tree_depth_limit));
 
         if (should_be_leaf) {
+            // ── 5a: Emit leaf (extract: emit_leaf(node, first, last)) ─────────
+            // Inputs (reads): morton_indices_[first..last], positions_x_/positions_y_/masses_,
+            //                 current sizes of leaf_* to compute 'off'
+            // Outputs (writes): node.is_leaf=1, node.particle_count (capped 255),
+            //                   node.leaf_first/leaf_last,
+            //                   append to leaf_pos_x_/leaf_pos_y_/leaf_mass_/leaf_idx_,
+            //                   particle_leaf_slot_[global_idx] = off + t,
+            //                   node.children[*] = UINT32_MAX
             node.is_leaf = 1;
             const uint32_t cnt = static_cast<uint32_t>(count);
             node.particle_count = static_cast<uint8_t>(std::min<uint32_t>(cnt, 255));
@@ -445,12 +492,23 @@ void BarnesHutParticleSystem::build_tree() {
             continue;
         }
 
+        // ── 5b: Internal node path (extract: enqueue_children_from_morton(...)) ─
+        // Inputs (reads): node AABB, item.{first,last,depth}, split_morton_range result,
+        //                 parent index, create_node(), morton_ranges
+        // Outputs (writes): node.is_leaf=0, node.particle_count,
+        //                   child nodes appended/initialized in tree_nodes_,
+        //                   node.children[quad] indices,
+        //                   child AABBs from (parent AABB, cx, cy),
+        //                   node_stack_.push_back(child_idx, child_first, child_last, depth+1)
         node.is_leaf = 0;
         node.particle_count = static_cast<uint8_t>(count);
 
         const double cx = 0.5 * (node.min_x + node.max_x);
         const double cy = 0.5 * (node.min_y + node.max_y);
 
+        // (already a helper) split_morton_range(first,last,depth)
+        // Inputs (reads): morton_indices_[first..last], depth
+        // Outputs (writes): returns four [range_first, range_last] pairs
         auto morton_ranges = split_morton_range(item.first, item.last, item.depth);
 
         for (int quad = 0; quad < 4; ++quad) {
@@ -496,8 +554,14 @@ void BarnesHutParticleSystem::build_tree() {
         }
     }
 
+    // ── 6: Bottom-up mass/COM (already a helper: calculate_center_of_mass) ───
+    // Inputs (reads): tree_nodes_ topology, leaf_* arrays (positions/masses), leaf ranges
+    // Outputs (writes): per-node mass properties (e.g., total_mass, com_x/com_y, bound_r) inside tree_nodes_
     calculate_center_of_mass(root_node_index_);
 
+    // ── 7: Finalize: cache previous positions & mark valid (finalize_tree) ───
+    // Inputs (reads): particle_count_, positions_x_/positions_y_
+    // Outputs (writes): previous_positions_ resized+filled, tree_valid_=true
     if (previous_positions_.size() != particle_count_) {
         previous_positions_.resize(particle_count_);
     }
@@ -506,8 +570,8 @@ void BarnesHutParticleSystem::build_tree() {
     }
 
     tree_valid_ = true;
-
 }
+
 
 
 bool BarnesHutParticleSystem::should_rebuild_tree() const {
@@ -598,10 +662,16 @@ void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
     const float* __restrict leaf_y,
     const float* __restrict leaf_m) const
 {
+    // ── A: Early-out for empty leaf  (extract: leaf_empty_guard(node)) ────────
+    // Inputs (reads): node.leaf_first, node.leaf_last
+    // Outputs (writes): none (early return if no particles in leaf)
     if (node.leaf_first == UINT32_MAX) return;
 
     const uint32_t cnt = node.leaf_last - node.leaf_first + 1;
 
+    // ── B: Broadcast invariants & constants  (extract: init_neon_constants(...)) ─
+    // Inputs (reads): px_c, py_c, ox, oy, gi, EPS_SQ
+    // Outputs (writes): local NEON registers (vpx_c, vpy_c, vox, voy, vgi, veps, vhalf, vone_five, etc.)
     const float32x4_t vpx_c = vdupq_n_f32(px_c);
     const float32x4_t vpy_c = vdupq_n_f32(py_c);
     const float32x4_t vox = vdupq_n_f32(ox);
@@ -620,13 +690,19 @@ void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
 
     uint32_t i = 0;
     
+    // ── C: Vectorized main loop over blocks of 8  (extract: accumulate_block8(...)) ─
+    // Inputs (reads): leaf_x/leaf_y/leaf_m[i..i+7], i_local, vpx_c/vpy_c, vox/voy, vgi, veps
+    // Outputs (writes): acc_fx, acc_fy (accumulated), i advanced by 8 per iteration
     for (; i + 7 < cnt; i += 8) {
+        // (micro) Prefetch next cache line
+        // Inputs: &leaf_*[i+32] ; Outputs: cache hint only
         if (i + 32 < cnt) {
             __builtin_prefetch(&leaf_x[i + 32], 0, 1);
             __builtin_prefetch(&leaf_y[i + 32], 0, 1);
             __builtin_prefetch(&leaf_m[i + 32], 0, 1);
         }
 
+        // (micro) Load leaf data
         const float32x4_t vx0 = vld1q_f32(&leaf_x[i]);
         const float32x4_t vx1 = vld1q_f32(&leaf_x[i + 4]);
         const float32x4_t vy0 = vld1q_f32(&leaf_y[i]);
@@ -634,15 +710,17 @@ void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
         const float32x4_t vm0 = vld1q_f32(&leaf_m[i]);
         const float32x4_t vm1 = vld1q_f32(&leaf_m[i + 4]);
 
+        // (micro) Build per-lane indices, mask out self (i_local), turn mask into {1,0} float
+        // Inputs: i, i_local ; Outputs: mask0/mask1 (1.0 where j != i_local, 0.0 where equal)
         const int32x4_t vidx0 = vaddq_s32(vdupq_n_s32(static_cast<int32_t>(i)), vidx_base);
         const int32x4_t vidx1 = vaddq_s32(vdupq_n_s32(static_cast<int32_t>(i + 4)), vidx_base);
-
         const uint32x4_t neq0 = vmvnq_u32(vceqq_s32(vi_local, vidx0));
         const uint32x4_t neq1 = vmvnq_u32(vceqq_s32(vi_local, vidx1));
         const float32x4_t mask0 = vreinterpretq_f32_u32(vandq_u32(neq0, vone_bits));
         const float32x4_t mask1 = vreinterpretq_f32_u32(vandq_u32(neq1, vone_bits));
 
-        // Center coordinates first, then compute displacement
+        // (micro) Center coordinates around (ox,oy), then displacement to particle (px_c,py_c)
+        // Inputs: vx*/vy*, vox/voy, vpx_c/vpy_c ; Outputs: dx0/dy0, dx1/dy1
         const float32x4_t lx0_c = vsubq_f32(vx0, vox);
         const float32x4_t lx1_c = vsubq_f32(vx1, vox);
         const float32x4_t ly0_c = vsubq_f32(vy0, voy);
@@ -653,6 +731,8 @@ void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
         const float32x4_t dy0 = vsubq_f32(ly0_c, vpy_c);
         const float32x4_t dy1 = vsubq_f32(ly1_c, vpy_c);
 
+        // (micro) r^2 with softening epsilon
+        // Inputs: dx*/dy*, veps ; Outputs: r2_0, r2_1
         float32x4_t r2_0, r2_1;
         #if defined(__aarch64__)
         r2_0 = vfmaq_f32(vfmaq_f32(veps, dx0, dx0), dy0, dy0);
@@ -662,6 +742,8 @@ void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
         r2_1 = vmlaq_f32(vmlaq_f32(veps, dx1, dx1), dy1, dy1);
         #endif
 
+        // (micro) inv_r via rsqrt estimate + 1 NR refinement
+        // Inputs: r2_* ; Outputs: inv_r0, inv_r1
         float32x4_t inv_r0 = vrsqrteq_f32(r2_0);
         float32x4_t inv_r1 = vrsqrteq_f32(r2_1);
 
@@ -678,6 +760,8 @@ void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
         inv_r1 = vmulq_f32(inv_r1, vsubq_f32(vone_five, half_r2_inv1_sq));
         #endif
 
+        // (micro) inv_r^3 and scale by gi * m_j, masked to skip self
+        // Inputs: inv_r*, vm*, vgi, mask* ; Outputs: s0, s1
         const float32x4_t inv_r3_0 = vmulq_f32(inv_r0, vmulq_f32(inv_r0, inv_r0));
         const float32x4_t inv_r3_1 = vmulq_f32(inv_r1, vmulq_f32(inv_r1, inv_r1));
 
@@ -685,6 +769,8 @@ void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
         const float32x4_t s0 = vmulq_f32(mask0, vmulq_f32(vgi, vmulq_f32(vm0, inv_r3_0)));
         const float32x4_t s1 = vmulq_f32(mask1, vmulq_f32(vgi, vmulq_f32(vm1, inv_r3_1)));
 
+        // (micro) accumulate force components
+        // Inputs: s*, dx*/dy* ; Outputs: acc_fx += s*dx, acc_fy += s*dy
         #if defined(__aarch64__)
         acc_fx = vfmaq_f32(acc_fx, s0, dx0);
         acc_fx = vfmaq_f32(acc_fx, s1, dx1);
@@ -698,7 +784,9 @@ void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
         #endif
     }
 
-    // Handle remainder and scalar fallback the same way
+    // ── D: Horizontal reduce SIMD accumulators to scalars  (extract: reduce_vec2f(acc_fx, acc_fy)) ─
+    // Inputs (reads): acc_fx, acc_fy
+    // Outputs (writes): fx_total, fy_total (partial sums from vector loop)
     float fx_total, fy_total;
     #if defined(__aarch64__)
     fx_total = vaddvq_f32(acc_fx);
@@ -710,7 +798,10 @@ void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
     fy_total = vget_lane_f32(sum_fy_lo, 0) + vget_lane_f32(sum_fy_lo, 1);
     #endif
 
-    // Scalar remainder with centered coordinates
+    // ── E: Scalar remainder (tail < 8)  (extract: accumulate_tail_scalar(...)) ─
+    // Inputs (reads): i (current), cnt, i_local, leaf_x/y/m, px_c/py_c, ox/oy, gi, EPS_SQ
+    // Outputs (writes): fx_total += ..., fy_total += ...
+    // Notes: skips self via (int)i == i_local; uses same centered-coordinates path as SIMD
     for (; i < cnt; ++i) {
         if (static_cast<int>(i) == i_local) continue;
 
@@ -727,20 +818,63 @@ void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
         fy_total += s * dy;
     }
 
+    // ── F: Accumulate into outputs  (extract: flush_force_totals(fx_total, fy_total, fx, fy)) ─
+    // Inputs (reads): fx_total, fy_total
+    // Outputs (writes): fx += fx_total; fy += fy_total  (caller-visible accumulation)
     fx += fx_total;
     fy += fy_total;
 }
 
-#define LIKELY(x) __builtin_expect(!!(x), 1)
-#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
 __attribute__((always_inline, hot))
 inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
+    /*
+     ** 
+      * PHASES (flow)
+     *  0) Guard & per-particle constants
+     *     - Early-out if no root.
+     *     - Load p = positions[i], m_i, theta^2, eps^2.
+     *     - Center all positions around root COM (ox,oy); build (px_c,py_c).
+     *
+     *  1) Stack & batch init
+     *     - Push root onto local stack.
+     *     - Cache my leaf slot (for self-skip in leaves).
+     *     - Init internal-node batch buffers (ax,ay,am) + SIMD/SCALAR accumulators; define flush() lambda.
+     *
+     *  2) Main traversal loop
+     *     - Pop node; skip if mass==0.
+     *     - LEAF:
+     *         • flush() pending internal batch.
+     *         • Find leaf range [off..off+cnt), compute i_local from my_slot.
+     *         • If cnt ≥ max_particles_per_leaf: call process_leaf_forces_neon_centered(...) (centered coords),
+     *           then scale by G_GALACTIC and accumulate.
+     *           Else: scalar inner loop with same centered math.
+     *     - INTERNAL:
+     *         • Compute centered node COM displacement (dx,dy), dist_sq = dx²+dy²+eps².
+     *         • Acceptance test: bound_r² < theta² * dist_sq ?
+     *             – YES: batch (dx,dy, gi*node.mass) into ax/ay/am; flush() when batch==4.
+     *             – NO : push non-empty children onto stack (prefetch first child). If stack would overflow,
+     *                    approximate this node immediately (single-node MAC) after flush().
+     *
+     *  3) Final reduce & flush
+     *     - flush() any remaining batch; fold scalar + SIMD partials; add into (fx,fy).
+     *  INPUTS:
+     *   - positions_x/y, masses, config.theta_squared, EPS_SQ
+     *   - tree_nodes_ (COM, total_mass, bound_r, children, leaf ranges)
+     *   - particle_leaf_slot_[i] (for self-skip in leaf) 
+     *
+     *  OUTPUTS:
+     *   - fx, fy: incremented by all accepted internal nodes + all leaf bodies (self skipped)   
+     *
+     * */
     size_t i, float& fx, float& fy,
     const float* __restrict positions_x,
     const float* __restrict positions_y,
     const float* __restrict masses) const
 {
-    if (UNLIKELY(root_node_index_ == UINT32_MAX)) return false;
+    if (unlikely(root_node_index_ == UINT32_MAX)) return false;
 
     const float px = positions_x[i];
     const float py = positions_y[i]; 
@@ -748,7 +882,7 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
     const float eps2 = EPS_SQ;
     const float theta2 = config_.theta_squared;
 
-    // NEW: Use root COM as origin to center all coordinates
+    // new: use root com as origin to center all coordinates
     const float ox = tree_nodes_[root_node_index_].com_x;
     const float oy = tree_nodes_[root_node_index_].com_y;
     const float px_c = px - ox;
@@ -756,14 +890,14 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
 
     float fx_acc = 0.0f, fy_acc = 0.0f;
 
-    constexpr size_t STACK_SIZE = 2048;
-    uint32_t stack[STACK_SIZE];
+    constexpr size_t stack_size = 2048;
+    uint32_t stack[stack_size];
     size_t top = 0;
     stack[top++] = root_node_index_;
 
     const uint32_t my_slot = particle_leaf_slot_[static_cast<uint32_t>(i)];
 
-    // Batch buffers for internal nodes
+    // batch buffers for internal nodes
     float acc_fx_scalar = 0.0f, acc_fy_scalar = 0.0f;
     int acc_n = 0;
     alignas(16) float ax[4], ay[4], am[4];
@@ -772,7 +906,7 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
     float32x4_t acc_fy_vec = vdupq_n_f32(0.0f);
 
     auto flush_internal_batch = [&]() {
-        if (UNLIKELY(acc_n == 0)) return;
+        if (unlikely(acc_n == 0)) return;
         
         if (acc_n < 4) {
             for (int t = 0; t < acc_n; ++t) {
@@ -789,12 +923,12 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
             const float32x4_t dy = vld1q_f32(ay);
             const float32x4_t m  = vld1q_f32(am);
             const float32x4_t veps2 = vdupq_n_f32(eps2);
-            const float32x4_t vG = vdupq_n_f32(G_GALACTIC);
+            const float32x4_t vg = vdupq_n_f32(G_GALACTIC);
 
             float32x4_t r2 = vfmaq_f32(vfmaq_f32(veps2, dx, dx), dy, dy);
             float32x4_t rinv = rsqrt_nr_f32x4(r2);
             float32x4_t rinv3 = vmulq_f32(rinv, vmulq_f32(rinv, rinv));
-            float32x4_t s = vmulq_f32(vG, vmulq_f32(m, rinv3));
+            float32x4_t s = vmulq_f32(vg, vmulq_f32(m, rinv3));
 
             acc_fx_vec = vfmaq_f32(acc_fx_vec, s, dx);
             acc_fy_vec = vfmaq_f32(acc_fy_vec, s, dy);
@@ -802,17 +936,17 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
         acc_n = 0;
     };
 
-    while (LIKELY(top > 0)) {
+    while (likely(top > 0)) {
         const uint32_t node_idx = stack[--top];
         const QuadTreeNode& node = tree_nodes_[node_idx];
         
-        if (UNLIKELY(node.total_mass <= 0.0f)) continue;
+        if (unlikely(node.total_mass <= 0.0f)) continue;
 
         if (node.is_leaf) {
             flush_internal_batch();
 
             const uint32_t off = node.leaf_first;
-            if (LIKELY(off != UINT32_MAX)) {
+            if (likely(off != UINT32_MAX)) {
                 const uint32_t cnt = node.leaf_last - off + 1;
                 
                 const int i_local = (my_slot >= off && my_slot < off + cnt)
@@ -824,7 +958,7 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
                     __builtin_prefetch(&leaf_mass_[off], 0, 3);
                     
                     float fx_leaf = 0.0f, fy_leaf = 0.0f;
-                    // Pass centered coordinates to NEON
+                    // pass centered coordinates to neon
                     process_leaf_forces_neon_centered(node, i_local, px_c, py_c, gi, 
                                                     fx_leaf, fy_leaf, ox, oy,
                                                     &leaf_pos_x_[off], 
@@ -833,9 +967,9 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
                     fx_acc += fx_leaf * G_GALACTIC;
                     fy_acc += fy_leaf * G_GALACTIC;
                 } else {
-                    // Scalar path with centered coordinates
+                    // scalar path with centered coordinates
                     for (uint32_t t = 0; t < cnt; ++t) {
-                        if (UNLIKELY(static_cast<int>(t) == i_local)) continue;
+                        if (unlikely(static_cast<int>(t) == i_local)) continue;
                         
                         const float lx_c = leaf_pos_x_[off + t] - ox;
                         const float ly_c = leaf_pos_y_[off + t] - oy;
@@ -854,7 +988,7 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
             continue;
         }
 
-        // Internal node with centered coordinates
+        // internal node with centered coordinates
         const float nx_c = node.com_x - ox;
         const float ny_c = node.com_y - oy;
         const float dx = nx_c - px_c;
@@ -862,8 +996,8 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
         const float dist_sq = dx*dx + dy*dy + eps2;
         const float bound_r_sq = node.bound_r * node.bound_r;
         
-        if (LIKELY(bound_r_sq < theta2 * dist_sq)) {
-            // Batch for NEON processing
+        if (likely(bound_r_sq < theta2 * dist_sq)) {
+            // batch for neon processing
             ax[acc_n] = dx;
             ay[acc_n] = dy;
             am[acc_n] = gi * node.total_mass;
@@ -871,7 +1005,7 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
                 flush_internal_batch();
             }
         } else {
-            // Traverse children
+            // traverse children
             uint32_t children_to_push[4];
             int child_count = 0;
             
@@ -880,7 +1014,7 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
             if (node.children[1] != UINT32_MAX) children_to_push[child_count++] = node.children[1];
             if (node.children[0] != UINT32_MAX) children_to_push[child_count++] = node.children[0];
 
-            if (LIKELY(top + child_count <= STACK_SIZE)) {
+            if (likely(top + child_count <= stack_size)) {
                 if (child_count > 0) {
                     __builtin_prefetch(&tree_nodes_[children_to_push[0]], 0, 1);
                 }
@@ -894,7 +1028,7 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
                 }
                 top += child_count;
             } else {
-                // Stack overflow - approximate this node
+                // stack overflow - approximate this node
                 flush_internal_batch();
                 const float rinv = rsqrt_fast(dist_sq);
                 const float rinv3 = rinv * rinv * rinv;
@@ -925,8 +1059,23 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
 }
 
 void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
+    /*
+     * Bottom-up computation of center of mass (COM), total mass, and bounding radius for a quadtree node.
+     *
+     * Inputs:
+     *  - tree_nodes_[node_index] and its children[]
+     *  - For leaves: leaf_pos_x_/leaf_pos_y_/leaf_mass_ over [leaf_first..leaf_last]
+     *
+     *  Outputs:
+     *  - node.total_mass, node.com_x, node.com_y, node.bound_r
+     *  - For leaves: node.particle_count (clamped to 255)
+     *
+     * */
     QuadTreeNode& node = tree_nodes_[node_index];
    
+    // ── A: Classify & leaf empty-guard (extract: is_empty_leaf(node)) ─────────
+    // Inputs (reads): node.is_leaf, node.leaf_first, node.leaf_last
+    // Outputs (writes on empty): node.com_x=node.com_y=0, node.total_mass=0, node.bound_r=0; return
     if (node.is_leaf) {
         if (node.leaf_first == UINT32_MAX || node.leaf_last == UINT32_MAX) {
             node.com_x = node.com_y = 0.0f;
@@ -935,11 +1084,13 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
             return;
         }
 
+        // ── A1: Leaf totals (mass and COM) (extract: accumulate_leaf_mass_com(node)) ─
+        // Inputs (reads): leaf_pos_x_/leaf_pos_y_/leaf_mass_[off..off+cnt)
+        // Outputs (writes): node.total_mass, node.com_x, node.com_y
         const uint32_t off = node.leaf_first;
         const uint32_t cnt = node.leaf_last - node.leaf_first + 1;
 
         float total_m = 0.0f, wx = 0.0f, wy = 0.0f;
-        
         for (uint32_t t = 0; t < cnt; ++t) {
             const float m = leaf_mass_[off + t];
             total_m += m;
@@ -955,6 +1106,9 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
             node.com_x = node.com_y = 0.0f;
         }
 
+        // ── A2: Leaf bounding radius (extract: compute_leaf_bound_r(node)) ────
+        // Inputs (reads): leaf_pos_x_/leaf_pos_y_[off..off+cnt), node.com_x, node.com_y
+        // Outputs (writes): node.bound_r = max_j ||p_j - COM||
         float max_dist_sq = 0.0f;
         for (uint32_t t = 0; t < cnt; ++t) {
             const float dx = leaf_pos_x_[off + t] - node.com_x;
@@ -964,10 +1118,16 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
         }
         node.bound_r = std::sqrt(max_dist_sq); 
         
+        // ── A3: Leaf finalize (extract: finalize_leaf_header(node,cnt)) ───────
+        // Inputs (reads): cnt
+        // Outputs (writes): node.particle_count = min(cnt,255)
         node.particle_count = static_cast<uint8_t>(std::min<uint32_t>(cnt, 255));
         return;
     }
     
+    // ── B: Internal post-order: recurse into children & accumulate weighted sums ─
+    // Inputs (reads): node.children[], tree_nodes_[child].{total_mass, com_x, com_y}
+    // Outputs (writes): weighted_x, weighted_y, total_mass (locals)
     float total_mass = 0.0f;
     float weighted_x = 0.0f;
     float weighted_y = 0.0f;
@@ -985,6 +1145,9 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
         }
     }
     
+    // ── B1: Finalize internal mass/COM (extract: finalize_internal_com(node,...)) ─
+    // Inputs (reads): weighted_x, weighted_y, total_mass
+    // Outputs (writes): node.total_mass, node.com_x, node.com_y
     if (total_mass > 0.0f) {
         node.com_x = weighted_x / total_mass;
         node.com_y = weighted_y / total_mass;
@@ -994,6 +1157,9 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
         node.total_mass = 0.0f;
     }
     
+    // ── C: Internal bounding radius from children (extract: compute_internal_bound_r(node)) ─
+    // Inputs (reads): node.com_x, node.com_y, tree_nodes_[child].{com_x,com_y,bound_r,total_mass}
+    // Outputs (writes): node.bound_r = max_i ( ||child.COM - node.COM|| + child.bound_r )
     float max_bound_r = 0.0f;
     for (int i = 0; i < 4; ++i) {
         if (node.children[i] != UINT32_MAX) {
@@ -1011,6 +1177,7 @@ void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
     }
     node.bound_r = max_bound_r;
 }
+
 
 void BarnesHutParticleSystem::compute_frame_constants() {
     calculate_bounds();
@@ -1187,7 +1354,7 @@ BarnesHutParticleSystem::TreeNode BarnesHutParticleSystem::build_tree_visualizat
 
 
 //===========================================================================================
-//==                                    Particle stuff?                                   ==
+//==                                    Particle stuff                                    ==
 //===========================================================================================
 
 bool BarnesHutParticleSystem::add_particle(const Vec2& pos, const Vec2& vel, float mass, const Vec3& color) {

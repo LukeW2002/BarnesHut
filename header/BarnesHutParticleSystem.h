@@ -30,22 +30,9 @@ static constexpr float EPS_SQ = DEFAULT_SOFTENING_KPC * DEFAULT_SOFTENING_KPC ;
 
 class BarnesHutParticleSystem {
 public:
-    struct QuadTreeBox {
-        float min_x, min_y, max_x, max_y;  // Bounding box coordinates
-        int depth;                         // Tree depth (for coloring)
-        int particle_count;                // Number of particles in this node
-        bool is_leaf;                      // Whether this is a leaf node
-        
-        QuadTreeBox(float minX, float minY, float maxX, float maxY, int d, int count, bool leaf)
-            : min_x(minX), min_y(minY), max_x(maxX), max_y(maxY)
-            , depth(d), particle_count(count), is_leaf(leaf) {}
-    };
-    std::vector<QuadTreeBox> get_quadtree_boxes() const;
-    
-    // Enable/disable quadtree visualization
-    void set_quadtree_visualization_enabled(bool enabled) { visualize_quadtree_ = enabled; }
-    bool is_quadtree_visualization_enabled() const { return visualize_quadtree_; }
-
+    //===========================================================================================
+    //==                                   CONFIGURATION                                       ==
+    //===========================================================================================
 
     struct Config {
         float theta;                            // Barnes-Hut approximation parameter (0.5-1.0)
@@ -76,6 +63,27 @@ public:
 
     const Config& get_config() const { return config_; }
 
+    //===========================================================================================
+    //==                                   VISUALIZATION                                       ==
+    //===========================================================================================
+
+    struct QuadTreeBox {
+        float min_x, min_y, max_x, max_y;  // Bounding box coordinates
+        int depth;                         // Tree depth (for coloring)
+        int particle_count;                // Number of particles in this node
+        bool is_leaf;                      // Whether this is a leaf node
+        
+        QuadTreeBox(float minX, float minY, float maxX, float maxY, int d, int count, bool leaf)
+            : min_x(minX), min_y(minY), max_x(maxX), max_y(maxY)
+            , depth(d), particle_count(count), is_leaf(leaf) {}
+    };
+    
+    std::vector<QuadTreeBox> get_quadtree_boxes() const;
+    
+    // Enable/disable quadtree visualization
+    void set_quadtree_visualization_enabled(bool enabled) { visualize_quadtree_ = enabled; }
+    bool is_quadtree_visualization_enabled() const { return visualize_quadtree_; }
+
     struct TreeNode {
         double center_x, center_y, width;
         bool is_leaf;
@@ -88,9 +96,19 @@ public:
         {}
     };
 
+    // Tree visualization
+    TreeNode get_tree_visualization() const;
+
+    //===========================================================================================
+    //==                                   CONSTRUCTORS                                        ==
+    //===========================================================================================
 
     BarnesHutParticleSystem(size_t max_particles, EventBus& event_bus, const Config& config = Config{});
     ~BarnesHutParticleSystem();
+
+    //===========================================================================================
+    //==                                   PARTICLE MANAGEMENT                                 ==
+    //===========================================================================================
 
     // Particle management
     bool add_particle(const Vec2& pos, const Vec2& vel, float mass, const Vec3& color);
@@ -99,19 +117,12 @@ public:
 
     void nuclear_particle_separation();
 
-    // Physics simulation
-    void update(float dt);
-    void set_boundary(float min_x, float max_x, float min_y, float max_y);
-
-    // Configuration
-    void set_bounce_force(float force) { bounce_force_ = force; }
-    void set_damping(float damping) { damping_ = damping; }
-    void set_gravity(const Vec2& gravity) { gravity_ = Vector2d(gravity.x, gravity.y); }
-    void set_config(const Config& config);
-    
-    // NEW: Morton ordering control
-    void set_morton_ordering_enabled(bool enabled);
-    bool is_morton_ordering_enabled() const { return morton_ordering_enabled_; }
+    // Individual particle access
+    Vec2 get_position(size_t index) const;
+    Vec2 get_velocity(size_t index) const;
+    Vec2 get_force(size_t index) const;
+    float get_mass(size_t index) const;
+    Vec3 get_color(size_t index) const;
 
     // Performance and debugging
     size_t get_particle_count() const { return particle_count_; }
@@ -124,15 +135,27 @@ public:
     const std::vector<float>& get_velocities_y() const { return render_velocities_y_; }
     const std::vector<float>& get_masses() const { return render_masses_; }
 
-    // Individual particle access
-    Vec2 get_position(size_t index) const;
-    Vec2 get_velocity(size_t index) const;
-    Vec2 get_force(size_t index) const;
-    float get_mass(size_t index) const;
-    Vec3 get_color(size_t index) const;
+    //===========================================================================================
+    //==                                   PHYSICS SIMULATION                                  ==
+    //===========================================================================================
 
-    // Tree visualization
-    TreeNode get_tree_visualization() const;
+    // Physics simulation
+    void update(float dt);
+    void set_boundary(float min_x, float max_x, float min_y, float max_y);
+
+    // Configuration
+    void set_bounce_force(float force) { bounce_force_ = force; }
+    void set_damping(float damping) { damping_ = damping; }
+    void set_gravity(const Vec2& gravity) { gravity_ = Vector2d(gravity.x, gravity.y); }
+    void set_config(const Config& config);
+    
+    // Morton ordering control
+    void set_morton_ordering_enabled(bool enabled);
+    bool is_morton_ordering_enabled() const { return morton_ordering_enabled_; }
+
+    //===========================================================================================
+    //==                                   DEBUG & OPTIMIZATION                               ==
+    //===========================================================================================
 
     // Debug methods (declared only - implemented in .cpp)
     void print_performance_analysis() const;
@@ -149,9 +172,17 @@ public:
     void run_comprehensive_optimization();              // Run all optimizations together
 
 private:
+    //===========================================================================================
+    //==                                   TESTING HOOKS                                       ==
+    //===========================================================================================
     #ifdef BH_TESTING
         friend struct BHTestHooks;
     #endif
+
+    //===========================================================================================
+    //==                                   DATA STRUCTURES                                     ==
+    //===========================================================================================
+
     struct TraversalFrame {
         uint32_t node_idx;
         #ifdef ENABLE_DEPTH_STATS
@@ -172,42 +203,6 @@ private:
         StackItem(uint32_t idx, size_t f, size_t l, int d) 
             : node_index(idx), first(f), last(l), depth(d) {}
     };
-
-
-
-    std::array<uint32_t, 1u << 11> radix_histogram_{};
-    std::vector<float> current_accel_x_, current_accel_y_;  // Move from local in integrate_verlet
-    std::vector<StackItem> node_stack_;                     // Move from local in build_tree
-    size_t indices_filled_;
-
-
-    // Cache performance estimator
-
-    std::vector<float> leaf_pos_x_, leaf_pos_y_, leaf_mass_;
-    std::vector<uint32_t> leaf_idx_;        // original particle indices in leaf order
-    std::vector<uint32_t> leaf_offset_;     // per-leaf offset into leaf_* arrays
-    std::vector<uint32_t> leaf_count_;      // per-leaf counts
-    
-    // Map from global particle index -> global slot in compact leaf arrays
-    // (so we can get the local index to skip self)
-    std::vector<uint32_t> particle_leaf_slot_;
-
-
-
-
-
-    std::vector<uint64_t> morton_keys_;           // Morton keys for each particle
-    std::vector<size_t> morton_indices_;          // Sorted particle indices by Morton key
-    std::vector<size_t> tmp_indices_;             // Temporary buffer for radix sort
-    void build_tree_morton_iterative();          // O(N) Morton-based tree builder
-    void apply_morton_permutation_to_arrays();
-    void sort_by_morton_key();                   // Sort particles by Morton key
-    void radix_sort_indices();                   // Fast radix sort for Morton keys
-    void ensure_indices_upto(size_t N);
-    std::array<std::pair<size_t, size_t>, 4> split_morton_range(size_t first, size_t last, int depth) const;
-
-    bool visualize_quadtree_ = false;
-    void collect_quadtree_boxes(uint32_t node_index, std::vector<QuadTreeBox>& boxes) const;
 
     struct alignas(64) QuadTreeNode {
         // Core data (16 bytes)
@@ -240,36 +235,31 @@ private:
             return std::max(max_x - min_x, max_y - min_y); 
         }
     };
-     inline bool calculate_force_on_particle_iterative(
-        size_t i, float& fx, float& fy, 
-        const float* positions_x, const float* positions_y, const float* masses) const;
 
-    void process_leaf_forces_neon_centered(
-    const QuadTreeNode& node, int i_local, float px_c, float py_c, float gi,
-    float& fx, float& fy, float ox, float oy,
-    const float* __restrict leaf_x,
-    const float* __restrict leaf_y,
-    const float* __restrict leaf_m) const;
+    //===========================================================================================
+    //==                                   MEMBER VARIABLES                                    ==
+    //===========================================================================================
 
-    // Tree management
-    std::vector<QuadTreeNode> tree_nodes_;      // Cache-friendly node storage
-    uint32_t root_node_index_;
-    uint32_t next_free_node_;
-    uint32_t current_frame_;
-    bool tree_valid_;
-    std::vector<Vector2d> previous_positions_;  // For cache invalidation detection
-
-    // NEW: Morton ordering state
-    bool morton_ordering_enabled_;              // Enable/disable Morton Z-order optimization
-    bool particles_need_reordering_;           // Flag indicating particles should be reordered
-    std::vector<size_t> inv_perm_;              // old->new permutation mapping (reused)
-    std::vector<uint8_t> visited_;              // Fast scratch buffer (not std::vector<bool>!)
-    static constexpr int MORTON_TOTAL_BITS = 42;
-
-    // Particle data (SOA for cache efficiency) - using double for precision
+    // Core system parameters
     size_t max_particles_;
     size_t particle_count_;
-    
+    EventBus& event_bus_;
+    size_t iteration_count_;
+    uint32_t current_frame_;
+
+    // Configuration
+    Config config_;
+
+    // Physics parameters
+    float bounce_force_;
+    float damping_;
+    Vector2d gravity_;
+    double bounds_min_x_, bounds_max_x_;
+    double bounds_min_y_, bounds_max_y_;
+    mutable float frame_eps2_;               // Cached adaptive softening squared  
+    mutable float root_com_x_, root_com_y_;  // Cached root center-of-mass
+
+    // Particle data (SOA for cache efficiency) - using double for precision
     std::vector<float> positions_x_, positions_y_;
     std::vector<float> velocities_x_, velocities_y_;
     std::vector<float> forces_x_, forces_y_;
@@ -283,21 +273,39 @@ private:
     std::vector<float> render_velocities_x_, render_velocities_y_;
     std::vector<float> render_masses_;
 
-    // Physics parameters
-    float bounce_force_;
-    float damping_;
-    Vector2d gravity_;
-    double bounds_min_x_, bounds_max_x_;
-    double bounds_min_y_, bounds_max_y_;
-    mutable float frame_eps2_;               // Cached adaptive softening squared  
-    mutable float root_com_x_, root_com_y_;  // Cached root center-of-mass
+    // Tree management
+    std::vector<QuadTreeNode> tree_nodes_;      // Cache-friendly node storage
+    uint32_t root_node_index_;
+    uint32_t next_free_node_;
+    bool tree_valid_;
+    std::vector<Vector2d> previous_positions_;  // For cache invalidation detection
+    bool visualize_quadtree_ = false;
 
-    // Barnes-Hut configuration
-    Config config_;
+    // Morton ordering state
+    bool morton_ordering_enabled_;              // Enable/disable Morton Z-order optimization
+    bool particles_need_reordering_;           // Flag indicating particles should be reordered
+    std::vector<size_t> inv_perm_;              // old->new permutation mapping (reused)
+    std::vector<uint8_t> visited_;              // Fast scratch buffer (not std::vector<bool>!)
+    static constexpr int MORTON_TOTAL_BITS = 42;
+
+    // Morton and tree work buffers 
+    std::vector<uint64_t> morton_keys_;           // Morton keys for each particle
+    std::vector<size_t> morton_indices_;          // Sorted particle indices by Morton key
+    std::vector<size_t> tmp_indices_;             // Temporary buffer for radix sort
+    std::array<uint32_t, 1u << 11> radix_histogram_{};
+    std::vector<float> current_accel_x_, current_accel_y_;  // Move from local in integrate_verlet
+    std::vector<StackItem> node_stack_;                     // Move from local in build_tree
+    size_t indices_filled_;
+
+    // Leaf arrays
+    std::vector<float> leaf_pos_x_, leaf_pos_y_, leaf_mass_;
+    std::vector<uint32_t> leaf_idx_;        // original particle indices in leaf order
+    std::vector<uint32_t> leaf_offset_;     // per-leaf offset into leaf_* arrays
+    std::vector<uint32_t> leaf_count_;      // per-leaf counts
     
-    // Performance tracking
-    EventBus& event_bus_;
-    size_t iteration_count_;
+    // Map from global particle index -> global slot in compact leaf arrays
+    // (so we can get the local index to skip self)
+    std::vector<uint32_t> particle_leaf_slot_;
 
     // Profiling counters - FIXED: Made all mutable for const methods
     mutable size_t current_tree_nodes_visited_;
@@ -308,6 +316,15 @@ private:
     mutable float current_tree_depth_sum_;
     mutable float cached_eps2_;
     mutable bool eps2_cache_valid_;
+    
+    // Temp for attempting to fix the allocation issue
+    std::vector<float> tmp_posx_, tmp_posy_, tmp_velx_, tmp_vely_, tmp_mass_;
+    std::vector<float> tmp_colr_, tmp_colg_, tmp_colb_;
+    std::vector<uint64_t> tmp_keys_;
+
+    //===========================================================================================
+    //==                                   CORE METHODS                                        ==
+    //===========================================================================================
 
     // Core Barnes-Hut methods
     void build_tree();
@@ -321,12 +338,8 @@ private:
     
     // Tree optimization and caching
     bool should_rebuild_tree() const;
-    
-    // NEW: Morton ordering methods
-    bool should_apply_morton_ordering() const;         // Determine when to apply Morton ordering
-    void apply_morton_ordering();                      // Apply Morton Z-order reordering
-    void check_for_morton_reordering_need();          // Check if particles have moved enough to warrant reordering
-    
+
+    // Physics integration
     void integrate_verlet(float dt);  
     
     // Utility methods
@@ -338,23 +351,63 @@ private:
     TreeNode build_tree_visualization(uint32_t node_index) const;
     bool detect_performance_issues() const;
     void print_detailed_mac_performance() const;
+
+    //===========================================================================================
+    //==                                   MORTON CODE                                         ==
+    //===========================================================================================
+
+    void build_tree_morton_iterative();          // O(N) Morton-based tree builder
+    void apply_morton_permutation_to_arrays();
+    void sort_by_morton_key();                   // Sort particles by Morton key
+    void radix_sort_indices();                   // Fast radix sort for Morton keys
+    void ensure_indices_upto(size_t N);
+    std::array<std::pair<size_t, size_t>, 4> split_morton_range(size_t first, size_t last, int depth) const;
+
+    // Morton ordering methods
+    bool should_apply_morton_ordering() const;         // Determine when to apply Morton ordering
+    void apply_morton_ordering();                      // Apply Morton Z-order reordering
+    void check_for_morton_reordering_need();          // Check if particles have moved enough to warrant reordering
+
+    //===========================================================================================
+    //==                                   VISUALIZATION                                       ==
+    //===========================================================================================
+
+    void collect_quadtree_boxes(uint32_t node_index, std::vector<QuadTreeBox>& boxes) const;
+
+    //===========================================================================================
+    //==                                   FORCE CALCULATIONS                                  ==
+    //===========================================================================================
+
+    inline bool calculate_force_on_particle_iterative(
+        size_t i, float& fx, float& fy, 
+        const float* positions_x, const float* positions_y, const float* masses) const;
+
+    void process_leaf_forces_neon_centered(
+        const QuadTreeNode& node, int i_local, float px_c, float py_c, float gi,
+        float& fx, float& fy, float ox, float oy,
+        const float* __restrict leaf_x,
+        const float* __restrict leaf_y,
+        const float* __restrict leaf_m) const;
+
+    //===========================================================================================
+    //==                                   OPTIMIZATION HELPERS                               ==
+    //===========================================================================================
     
     // Optimization helper methods  
     void reorder_particles_by_indices(const std::vector<std::pair<uint64_t, size_t>>& sorted_particles);
     void prefetch_tree_nodes() const;                  // Cache prefetching
-    //
-    // Temp for attempting to fix the allocation issue
-    std::vector<float> tmp_posx_, tmp_posy_, tmp_velx_, tmp_vely_, tmp_mass_;
-    std::vector<float> tmp_colr_, tmp_colg_, tmp_colb_;
-    std::vector<uint64_t> tmp_keys_;
 
-    
+    //===========================================================================================
+    //==                                   INLINE HELPERS                                      ==
+    //===========================================================================================
+
     // Inline helper methods for performance
     inline double distance_squared(float x1, float y1, float x2, float y2) const {
         const float dx = x1 - x2;
         const float dy = y1 - y2;
         return dx * dx + dy * dy;
     }
+    
     inline bool theta_condition_met(const QuadTreeNode& node, float px, float py) const {
         const float dx = node.com_x - px;
         const float dy = node.com_y - py;
@@ -381,7 +434,32 @@ private:
         r = vmulq_f32(r, vrsqrtsq_f32(vmulq_f32(x, r), r));
         return r;
     }
-   
+
+    inline float get_adaptive_softening_squared() const {
+        // Cache eps2 calculation - only recompute when bounds change
+        if (!eps2_cache_valid_) {
+            const float world_span_x = float(bounds_max_x_ - bounds_min_x_);
+            const float world_span_y = float(bounds_max_y_ - bounds_min_y_);
+            const float world_scale = std::max(world_span_x, world_span_y);
+            
+            // Softening that scales with the scene
+            const float eps = config_.softening_rel * world_scale;
+            cached_eps2_ = eps * eps;
+            eps2_cache_valid_ = true;
+        }
+        return cached_eps2_;
+    }
+    
+    inline int get_quadrant(double x, double y, double cx, double cy) const {
+        const int east = (x >= cx) ? 1 : 0;
+        const int north = (y >= cy) ? 1 : 0;
+        return (north << 1) | east;  // SW(0,0)->0, SE(1,0)->1, NW(0,1)->2, NE(1,1)->3
+    }
+
+    //===========================================================================================
+    //==                                   TEMPLATE HELPERS                                    ==
+    //===========================================================================================
+
     template <class T, class IndexT>
     inline void gather_by_index(std::vector<T>& a,
                                 const std::vector<IndexT>& idx,
@@ -398,9 +476,7 @@ private:
         a.swap(tmp);                     // O(1) swap to make gathered data the primary
     }
 
-
-
-   template<typename T>
+    template<typename T>
     void permute_in_place(std::vector<T>& data, 
                          const std::vector<size_t>& old_to_new_perm, // dest index for each old index
                          size_t count, 
@@ -438,29 +514,6 @@ private:
             }
         }
     } 
-    inline float get_adaptive_softening_squared() const {
-        // Cache eps2 calculation - only recompute when bounds change
-        if (!eps2_cache_valid_) {
-            const float world_span_x = float(bounds_max_x_ - bounds_min_x_);
-            const float world_span_y = float(bounds_max_y_ - bounds_min_y_);
-            const float world_scale = std::max(world_span_x, world_span_y);
-            
-            // Softening that scales with the scene
-            const float eps = config_.softening_rel * world_scale;
-            cached_eps2_ = eps * eps;
-            eps2_cache_valid_ = true;
-        }
-        return cached_eps2_;
-    }
-        
-
-    
-    inline int get_quadrant(double x, double y, double cx, double cy) const {
-    const int east = (x >= cx) ? 1 : 0;
-    const int north = (y >= cy) ? 1 : 0;
-    return (north << 1) | east;  // SW(0,0)->0, SE(1,0)->1, NW(0,1)->2, NE(1,1)->3
-}
 };
 
-// Backwards compatibility typedef
 using ParticleSystem = BarnesHutParticleSystem;
