@@ -397,9 +397,7 @@ void GalaxyFactory::create_andromeda_like_galaxy() {
                                     halo_mass / halo_particles / 1e9f, color);
     }
     
-    particle_system_.fix_overlapping_particles_advanced();
     configure_for_galaxy_scale();
-    std::cout << "✅ Andromeda-like galaxy created with " << particle_system_.get_particle_count() << " particles\n";
 }
 
 
@@ -556,9 +554,6 @@ void GalaxyFactory::create_two_spiral_binary_merger_100k() {
     build_ring(cA, vA, MBH1, /*clockwise=*/false);
     build_ring(cB, vB, MBH2, /*clockwise=*/true);
 
-    // Usual hygiene
-    particle_system_.fix_overlapping_particles_advanced();
-    particle_system_.optimize_particle_layout();
 
     // Huge sandbox so nothing hits the walls if something gets energetic
     PhysicsConfig cfg;
@@ -635,9 +630,6 @@ void GalaxyFactory::create_twin_spiral_pair() {
     create_two_armed_spiral_galaxy(c1, v1, 1.0, 16.0, 60000, 3000, 25000, 0.18, 0.0, false);
     create_two_armed_spiral_galaxy(c2, v2, 1.0, 16.0, 60000, 3000, 25000, 0.18, M_PI*0.35, true);
 
-    // Housekeeping that keeps BH happy in dense starts
-    particle_system_.fix_overlapping_particles_advanced();
-    particle_system_.optimize_particle_layout();
 
     PhysicsConfig config;
     config.boundary_min_x = -150.0f;
@@ -738,9 +730,6 @@ void GalaxyFactory::create_tidally_disrupting_flyby() {
     config.time_scale = 0.7f;  // a touch slower = clearer flyby
     if (on_update_physics_params) on_update_physics_params(config);
 
-    // Help the tree at t=0
-    particle_system_.fix_overlapping_particles_advanced();
-    particle_system_.optimize_particle_layout(); // Morton ordering
 
     std::cout << "✅ Tidal flyby ready: r0=" << r0 << " kpc, rp=" << rp << " kpc\n";
 }
@@ -1089,10 +1078,6 @@ void GalaxyFactory::create_galaxy_spiral() {
     // Add central massive object
     particle_system_.add_particle(Vec2(0, 0), Vec2(0, 0), 100.0f, Vec3(1.0f, 1.0f, 0.5f));
     
-    // Automatically optimize after creating galaxy (helps with clustered particles)
-    std::cout << "Auto-optimizing galaxy simulation...\n";
-    particle_system_.fix_overlapping_particles_advanced();
-    particle_system_.optimize_particle_layout();
     
     configure_for_galaxy_scale();
 }
@@ -1145,9 +1130,6 @@ void GalaxyFactory::create_cluster() {
         particle_system_.add_particle(pos, vel, 1.0f, color);
     }
     
-    // Automatically fix overlaps for cluster (very important for dense clusters)
-    std::cout << "Auto-fixing cluster overlaps...\n";
-    particle_system_.fix_overlapping_particles_advanced();
     
     configure_for_galaxy_scale();
 }

@@ -373,36 +373,6 @@ private:
         };
         
         // Optimization callbacks
-        imgui_interface_.on_run_optimizations = [this]() {
-            std::cout << "\n🚀 RUNNING PARTICLE SYSTEM OPTIMIZATIONS\n";
-            particle_system_.run_comprehensive_optimization();
-        };
-        
-        imgui_interface_.on_fix_overlaps = [this]() {
-            std::cout << "\n🔧 QUICK FIX: Removing particle overlaps\n";
-            particle_system_.fix_overlapping_particles_advanced();
-        };
-        
-        imgui_interface_.on_optimize_layout = [this]() {
-            std::cout << "\n📊 OPTIMIZING: Spatial layout with Morton ordering\n";
-            particle_system_.optimize_particle_layout();
-        };
-        
-        imgui_interface_.on_find_optimal_theta = [this]() {
-            std::cout << "\n🎯 OPTIMIZING: Finding optimal theta value\n";
-            particle_system_.adaptive_theta_optimization();
-        };
-        
-        imgui_interface_.on_diagnose_performance = [this]() {
-            std::cout << "\n🔍 DIAGNOSING: Performance bottlenecks\n";
-            particle_system_.diagnose_tree_traversal_bottleneck();
-            particle_system_.print_performance_analysis();
-        };
-        
-        imgui_interface_.on_compact_cache = [this]() {
-            std::cout << "\n📚✨ COMPACTING: Tree for cache efficiency\n";
-            particle_system_.compact_tree_for_cache_efficiency();
-        };
         
         // Set up galaxy factory callbacks for physics and camera updates
         galaxy_factory_.on_update_physics_params = [this](const GalaxyFactory::PhysicsConfig& config) {
@@ -559,54 +529,12 @@ private:
                 case GLFW_KEY_Q:  
                     {
                         bool current_state = app->imgui_interface_.should_show_quadtree();
-                        // Toggle through ImGui interface (it will handle the renderer updates)
                         app->particle_system_.set_quadtree_visualization_enabled(!current_state);
                         app->renderer_.set_quadtree_visualization_enabled(!current_state);
-                        std::cout << "Quadtree visualization: " << (!current_state ? "ON" : "OFF") << "\n";
                     }
                     break;
                 case GLFW_KEY_SPACE:
                     app->imgui_interface_.set_paused(!app->imgui_interface_.is_paused());
-                    break;
-                case GLFW_KEY_R:
-                    app->galaxy_factory_.create_galaxy_spiral();
-                    break;
-                case GLFW_KEY_G:
-                    app->galaxy_factory_.create_galaxy_spiral();
-                    break;
-                case GLFW_KEY_S:
-                    app->galaxy_factory_.create_solar_system();
-                    break;
-                case GLFW_KEY_C:
-                    app->galaxy_factory_.create_cluster();
-                    break;
-                case GLFW_KEY_D:  // Debug performance analysis
-                    std::cout << "\n🔍 DIAGNOSING: Performance bottlenecks\n";
-                    app->particle_system_.diagnose_tree_traversal_bottleneck();
-                    app->particle_system_.print_performance_analysis();
-                    break;
-                case GLFW_KEY_T:  // Test theta values
-                    app->particle_system_.test_theta_performance();
-                    break;
-                case GLFW_KEY_O:  // Run comprehensive optimizations
-                    std::cout << "\n🚀 RUNNING PARTICLE SYSTEM OPTIMIZATIONS\n";
-                    app->particle_system_.run_comprehensive_optimization();
-                    break;
-                case GLFW_KEY_F:  // Quick fix overlaps
-                    std::cout << "\n🔧 QUICK FIX: Removing particle overlaps\n";
-                    app->particle_system_.fix_overlapping_particles_advanced();
-                    break;
-                case GLFW_KEY_M:  // Morton ordering optimization
-                    std::cout << "\n📊 OPTIMIZING: Spatial layout with Morton ordering\n";
-                    app->particle_system_.optimize_particle_layout();
-                    break;
-                case GLFW_KEY_H:  // Find optimal theta
-                    std::cout << "\n🎯 OPTIMIZING: Finding optimal theta value\n";
-                    app->particle_system_.adaptive_theta_optimization();
-                    break;
-                case GLFW_KEY_K:  // Compact tree cache
-                    std::cout << "\n📚✨ COMPACTING: Tree for cache efficiency\n";
-                    app->particle_system_.compact_tree_for_cache_efficiency();
                     break;
                 // Keyboard shortcuts for realistic galaxies
                 case GLFW_KEY_1:  // Milky Way

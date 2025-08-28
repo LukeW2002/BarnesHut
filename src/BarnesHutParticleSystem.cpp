@@ -7,9 +7,7 @@
 #include <limits>
 #include <random>
 #include <arm_neon.h>
-
-
-#include <os/signpost.h>
+#include <numeric>
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -34,7 +32,7 @@ BarnesHutParticleSystem::BarnesHutParticleSystem(size_t max_particles, EventBus&
       bounce_force_(1000.0f), damping_(0.999f), gravity_(0.0, 0.0),
       bounds_min_x_(-10.0), bounds_max_x_(10.0), bounds_min_y_(-10.0), bounds_max_y_(10.0),
       morton_ordering_enabled_(true), particles_need_reordering_(false), 
-      last_morton_frame_(UINT32_MAX), indices_filled_(0) {  
+      indices_filled_(0) {  
     
     config_.theta_squared = config_.theta * config_.theta;
     
@@ -89,9 +87,15 @@ BarnesHutParticleSystem::BarnesHutParticleSystem(size_t max_particles, EventBus&
 
 BarnesHutParticleSystem::~BarnesHutParticleSystem() = default;
 
+
+
+
+//===========================================================================================
+//==                                   MORTON CODE                                         ==
+//===========================================================================================
+
 class MortonCode {
 public:
-    // Interleave bits for 2D Morton code (Z-order)
     static uint64_t encode_morton_2d(uint32_t x, uint32_t y) {
         return (expand_bits_2d(x) << 1) | expand_bits_2d(y);
     }
@@ -208,12 +212,17 @@ inline void BarnesHutParticleSystem::radix_sort_indices() {
 
 
 inline void BarnesHutParticleSystem::ensure_indices_upto(size_t N) {
+    /*
+     * Maintain an idenity index array without rewriting the entire prefix every frame
+     * Input: N
+     * */
     if (indices_filled_ < N) {
         std::iota(morton_indices_.begin() + indices_filled_,
                   morton_indices_.begin() + N,
                   static_cast<size_t>(indices_filled_));
         indices_filled_ = N;
     }
+    else { std::iota(morton_indices_.begin(), morton_indices_.begin()+N, 0); indices_filled_ = N; }
 }
 
 inline void BarnesHutParticleSystem::sort_by_morton_key() {
@@ -299,122 +308,15 @@ std::array<std::pair<size_t, size_t>, 4> BarnesHutParticleSystem::split_morton_r
     return ranges;
 }
 
-bool BarnesHutParticleSystem::should_apply_morton_ordering() const {
-    if (!particles_need_reordering_) return false;
-   
-    static uint32_t last_morton_frame = 0;
-    const uint32_t morton_interval = 60;  
-    
-    bool enough_particles = particle_count_ >= 100;
-    bool time_to_reorder = (current_frame_ - last_morton_frame) >= morton_interval;
-    bool tree_rebuilding = !tree_valid_ || should_rebuild_tree();
-    
-    if (enough_particles && (time_to_reorder || tree_rebuilding)) {
-        last_morton_frame = current_frame_;
-        return true;
-    }
-    
-    return false;
-}
-
 void BarnesHutParticleSystem::check_for_morton_reordering_need() {
-    if (particle_count_ < 100) return;  
-    
-    const size_t sample_size = std::min(particle_count_, size_t(50));
-    const double movement_threshold = 0.1;
-    
-    double world_size = std::max(bounds_max_x_ - bounds_min_x_, bounds_max_y_ - bounds_min_y_);
-    double threshold_distance = movement_threshold * world_size;
-    double threshold_distance_sq = threshold_distance * threshold_distance;
-    
-    size_t moved_particles = 0;
-    
-    for (size_t i = 0; i < sample_size; ++i) {
-        size_t idx = (i * particle_count_) / sample_size;
-        if (idx < previous_positions_.size()) {
-            double dx = positions_x_[idx] - previous_positions_[idx].x();
-            double dy = positions_y_[idx] - previous_positions_[idx].y();
-            if (dx*dx + dy*dy > threshold_distance_sq) {
-                moved_particles++;
-            }
-        }
-    }
-    
-    if (moved_particles > sample_size * 0.3) {
-        particles_need_reordering_ = true;
-    }
-}
-
-std::vector<BarnesHutParticleSystem::QuadTreeBox> BarnesHutParticleSystem::get_quadtree_boxes() const {
-    std::vector<QuadTreeBox> boxes;
-    
-    if (!visualize_quadtree_ || !tree_valid_ || tree_nodes_.empty()) {
-        return boxes;
-    }
-
-    if (root_node_index_ != UINT32_MAX && root_node_index_ < tree_nodes_.size()) {
-        collect_quadtree_boxes(root_node_index_, boxes);
-    }
-    
-    return boxes;
-}
-
-void BarnesHutParticleSystem::collect_quadtree_boxes(uint32_t node_index, std::vector<QuadTreeBox>& boxes) const {
-    if (node_index >= tree_nodes_.size()) return;
-    
-    const QuadTreeNode& node = tree_nodes_[node_index];
-    
-    boxes.emplace_back(
-        static_cast<float>(node.min_x),
-        static_cast<float>(node.min_y),
-        static_cast<float>(node.max_x),
-        static_cast<float>(node.max_y),
-        static_cast<int>(node.depth),
-        static_cast<int>(node.particle_count),
-        node.is_leaf != 0
-    );
-    
-    if (!node.is_leaf) {
-        for (int i = 0; i < 4; ++i) {
-            if (node.children[i] != UINT32_MAX) {
-                collect_quadtree_boxes(node.children[i], boxes);
-            }
-        }
-    }
-}
-
-bool BarnesHutParticleSystem::add_particle(const Vec2& pos, const Vec2& vel, float mass, const Vec3& color) {
-    if (particle_count_ >= max_particles_) {
-        return false;
-    }
-    
-    size_t idx = particle_count_;
-    positions_x_[idx] = pos.x;
-    positions_y_[idx] = pos.y;
-    velocities_x_[idx] = vel.x;
-    velocities_y_[idx] = vel.y;
-    forces_x_[idx] = 0.0f;
-    forces_y_[idx] = 0.0f;
-    masses_[idx] = mass;
-    colors_r_[idx] = color.x;
-    colors_g_[idx] = color.y;
-    colors_b_[idx] = color.z;
-    
-    particle_count_++;
-    tree_valid_ = false; 
-    
-    if (morton_ordering_enabled_ && particle_count_ >= 100) {
-        particles_need_reordering_ = true;
-    }
-    
-    ParticleAddedEvent event{idx, static_cast<float>(pos.x), static_cast<float>(pos.y), 
-                           static_cast<float>(vel.x), static_cast<float>(vel.y), 
-                           mass, color.x, color.y, color.z};
-    event_bus_.emit(Events::PARTICLE_ADDED, event);
-    
-    return true;
-}
-void BarnesHutParticleSystem::check_for_morton_reordering_need() {
+    /*
+     *    Checks if the morton code needs reordering based on how far the particles have moved
+     * 1. first calculates threshold based on the roots bounding bod
+     * 2. then checks a sampled amount of pixels on if its moved too far away calculated threshold via distance
+     *
+     * INPUT: particle_count_, bounds_min_x/y, bounds_max_min_x/y position_x/y_, previous_positions  
+     * OUTPUT: Non
+     * */
     if (particle_count_ < 100) return;  
     
     const size_t sample_size = std::min(particle_count_, size_t(50));
@@ -443,67 +345,17 @@ void BarnesHutParticleSystem::check_for_morton_reordering_need() {
 }
 
 
-void BarnesHutParticleSystem::clear_particles() {
-    particle_count_ = 0;
-    iteration_count_ = 0;
-    tree_valid_ = false;
-    next_free_node_ = 0;
-    current_frame_ = 0;
-    previous_positions_.clear();
-    particles_need_reordering_ = false;  // NEW: Reset reordering flag
-}
-
-void BarnesHutParticleSystem::remove_particle(size_t index) {
-    if (index >= particle_count_) return;
-    
-    if (index < particle_count_ - 1) {
-        positions_x_[index] = positions_x_[particle_count_ - 1];
-        positions_y_[index] = positions_y_[particle_count_ - 1];
-        velocities_x_[index] = velocities_x_[particle_count_ - 1];
-        velocities_y_[index] = velocities_y_[particle_count_ - 1];
-        forces_x_[index] = forces_x_[particle_count_ - 1];
-        forces_y_[index] = forces_y_[particle_count_ - 1];
-        masses_[index] = masses_[particle_count_ - 1];
-        colors_r_[index] = colors_r_[particle_count_ - 1];
-        colors_g_[index] = colors_g_[particle_count_ - 1];
-        colors_b_[index] = colors_b_[particle_count_ - 1];
-    }
-    
-    particle_count_--;
-    tree_valid_ = false;
-    
-    if (morton_ordering_enabled_) {
-        particles_need_reordering_ = true;
-    }
-}
-
-void BarnesHutParticleSystem::set_boundary(float min_x, float max_x, float min_y, float max_y) {
-    bounds_min_x_ = min_x;
-    bounds_max_x_ = max_x;
-    bounds_min_y_ = min_y;
-    bounds_max_y_ = max_y;
-    tree_valid_ = false;  
-    
-    if (morton_ordering_enabled_) {
-        particles_need_reordering_ = true;
-    }
-}
-
-void BarnesHutParticleSystem::set_config(const Config& config) {
-    config_ = config;
-    config_.theta_squared = config_.theta * config_.theta;
-    tree_valid_ = false;  // Config change may require tree rebuild
-}
 
 
+//===========================================================================================
+//==                                   TREE BUILDING                                       ==
+//===========================================================================================
 
 void BarnesHutParticleSystem::build_tree() {
     auto total_start = std::chrono::high_resolution_clock::now();
 
     tree_nodes_.clear();
     next_free_node_ = 0;
-    perf_stats_.tree_nodes_created = 0;
-    perf_stats_.tree_depth = 0;
 
     const size_t N = particle_count_;
     if (N == 0) {
@@ -590,8 +442,6 @@ void BarnesHutParticleSystem::build_tree() {
                 node.children[i] = UINT32_MAX;
             }
 
-            perf_stats_.tree_depth = std::max(perf_stats_.tree_depth,
-                                              static_cast<size_t>(item.depth));
             continue;
         }
 
@@ -656,10 +506,7 @@ void BarnesHutParticleSystem::build_tree() {
     }
 
     tree_valid_ = true;
-    perf_stats_.tree_nodes_created = next_free_node_;
 
-    auto total_end = std::chrono::high_resolution_clock::now();
-    perf_stats_.tree_build_time_ms = std::chrono::duration<float, std::milli>(total_end - total_start).count();
 }
 
 
@@ -694,107 +541,22 @@ uint32_t BarnesHutParticleSystem::create_node() {
     return next_free_node_++;
 }
 
-void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
-    QuadTreeNode& node = tree_nodes_[node_index];
-   
-    if (node.is_leaf) {
-        if (node.leaf_first == UINT32_MAX || node.leaf_last == UINT32_MAX) {
-            node.com_x = node.com_y = 0.0f;
-            node.total_mass = 0.0f;
-            node.bound_r = 0.0f;
-            return;
-        }
-
-        const uint32_t off = node.leaf_first;
-        const uint32_t cnt = node.leaf_last - node.leaf_first + 1;
-
-        float total_m = 0.0f, wx = 0.0f, wy = 0.0f;
-        
-        for (uint32_t t = 0; t < cnt; ++t) {
-            const float m = leaf_mass_[off + t];
-            total_m += m;
-            wx += leaf_pos_x_[off + t] * m;
-            wy += leaf_pos_y_[off + t] * m;
-        }
-
-        node.total_mass = total_m;
-        if (total_m > 0.0f) {
-            node.com_x = wx / total_m;
-            node.com_y = wy / total_m;
-        } else {
-            node.com_x = node.com_y = 0.0f;
-        }
-
-        float max_dist_sq = 0.0f;
-        for (uint32_t t = 0; t < cnt; ++t) {
-            const float dx = leaf_pos_x_[off + t] - node.com_x;
-            const float dy = leaf_pos_y_[off + t] - node.com_y;
-            const float dist_sq = dx*dx + dy*dy;
-            max_dist_sq = std::max(max_dist_sq, dist_sq);
-        }
-        node.bound_r = std::sqrt(max_dist_sq); 
-        
-        node.particle_count = static_cast<uint8_t>(std::min<uint32_t>(cnt, 255));
-        return;
-    }
+void BarnesHutParticleSystem::prefetch_tree_nodes() const {
+    if (!tree_valid_ || tree_nodes_.empty()) return;
     
-    float total_mass = 0.0f;
-    float weighted_x = 0.0f;
-    float weighted_y = 0.0f;
+    size_t prefetch_count = std::min(size_t(64), tree_nodes_.size());
     
-    for (int i = 0; i < 4; ++i) {
-        if (node.children[i] != UINT32_MAX) {
-            calculate_center_of_mass(node.children[i]);  // Recursive call
-            const QuadTreeNode& child = tree_nodes_[node.children[i]];
-            
-            if (child.total_mass > 0.0f) {
-                weighted_x += child.com_x * child.total_mass;
-                weighted_y += child.com_y * child.total_mass;
-                total_mass += child.total_mass;
-            }
-        }
+    for (size_t i = 0; i < prefetch_count; ++i) {
+        __builtin_prefetch(&tree_nodes_[i], 0, 3);  // GCC builtin for cache prefetch
     }
-    
-    if (total_mass > 0.0f) {
-        node.com_x = weighted_x / total_mass;
-        node.com_y = weighted_y / total_mass;
-        node.total_mass = total_mass;
-    } else {
-        node.com_x = node.com_y = 0.0f;
-        node.total_mass = 0.0f;
-    }
-    
-    float max_bound_r = 0.0f;
-    for (int i = 0; i < 4; ++i) {
-        if (node.children[i] != UINT32_MAX) {
-            const QuadTreeNode& child = tree_nodes_[node.children[i]];
-            
-            if (child.total_mass > 0.0f) {
-                const float dx = child.com_x - node.com_x;
-                const float dy = child.com_y - node.com_y;
-                const float dist_to_child_com = std::sqrt(dx*dx + dy*dy);
-                const float child_extent = dist_to_child_com + child.bound_r;
-                
-                max_bound_r = std::max(max_bound_r, child_extent);
-            }
-        }
-    }
-    node.bound_r = max_bound_r;
 }
 
-void BarnesHutParticleSystem::compute_frame_constants() {
-    calculate_bounds();
-    
-    const float world_span_x = float(bounds_max_x_ - bounds_min_x_);
-    const float world_span_y = float(bounds_max_y_ - bounds_min_y_);
-    const float world_scale = std::max(world_span_x, world_span_y);
-    
-    const float eps = config_.softening_rel * world_scale;
-    frame_eps2_ = eps * eps;
-    
-    root_com_x_ = tree_nodes_[root_node_index_].com_x;
-    root_com_y_ = tree_nodes_[root_node_index_].com_y;
-}
+
+
+//===========================================================================================
+//==                                  CALCULATIONS                                         ==
+//===========================================================================================
+
 
 void BarnesHutParticleSystem::calculate_forces_barnes_hut() {
     if (!tree_valid_ || root_node_index_ == UINT32_MAX) return;
@@ -829,230 +591,6 @@ void BarnesHutParticleSystem::calculate_forces_barnes_hut() {
 
 // If you are reading this function and can understand it, I am sorry. 
     // For I am to dumb to understand, the eldritch horrors of my own creation.
- void BarnesHutParticleSystem::process_leaf_forces_neon(
-    const QuadTreeNode& node, int i_local, float px, float py, float gi,
-    float& fx, float& fy,
-    const float* __restrict leaf_x,
-    const float* __restrict leaf_y,
-    const float* __restrict leaf_m) const
-{
-    if (node.leaf_first == UINT32_MAX) return;
-
-    const uint32_t cnt = node.leaf_last - node.leaf_first + 1;
-
-    // Convert to double precision to match scalar path
-    const double px_d = static_cast<double>(px);
-    const double py_d = static_cast<double>(py);
-
-    // NEON constants
-    const float32x4_t vgi = vdupq_n_f32(gi);
-    const float32x4_t veps = vdupq_n_f32(EPS_SQ);
-    const float32x4_t vhalf = vdupq_n_f32(0.5f);
-    const float32x4_t vone_five = vdupq_n_f32(1.5f);
-    
-    // For self-exclusion masking
-    const int32x4_t vi_local = vdupq_n_s32(i_local);
-    const int32x4_t vidx_base = {0, 1, 2, 3};
-    const uint32x4_t vone_bits = vdupq_n_u32(0x3F800000); // 1.0f as bits
-
-    // Force accumulators
-    float32x4_t acc_fx = vdupq_n_f32(0.0f);
-    float32x4_t acc_fy = vdupq_n_f32(0.0f);
-
-    uint32_t i = 0;
-    
-    // Main loop: process 8 particles at a time (2 x 4-wide NEON vectors)
-    for (; i + 7 < cnt; i += 8) {
-        // Prefetch next cache line for large leaves
-        if (i + 32 < cnt) {
-            __builtin_prefetch(&leaf_x[i + 32], 0, 1);
-            __builtin_prefetch(&leaf_y[i + 32], 0, 1);
-            __builtin_prefetch(&leaf_m[i + 32], 0, 1);
-        }
-
-        // Load 8 particles as two 4-wide vectors
-        const float32x4_t vx0 = vld1q_f32(&leaf_x[i]);
-        const float32x4_t vx1 = vld1q_f32(&leaf_x[i + 4]);
-        const float32x4_t vy0 = vld1q_f32(&leaf_y[i]);
-        const float32x4_t vy1 = vld1q_f32(&leaf_y[i + 4]);
-        const float32x4_t vm0 = vld1q_f32(&leaf_m[i]);
-        const float32x4_t vm1 = vld1q_f32(&leaf_m[i + 4]);
-
-        // Create index vectors for self-exclusion
-        const int32x4_t vidx0 = vaddq_s32(vdupq_n_s32(static_cast<int32_t>(i)), vidx_base);
-        const int32x4_t vidx1 = vaddq_s32(vdupq_n_s32(static_cast<int32_t>(i + 4)), vidx_base);
-
-        // Self-exclusion masks: 1.0f if not self, 0.0f if self
-        const uint32x4_t neq0 = vmvnq_u32(vceqq_s32(vi_local, vidx0));
-        const uint32x4_t neq1 = vmvnq_u32(vceqq_s32(vi_local, vidx1));
-        const float32x4_t mask0 = vreinterpretq_f32_u32(vandq_u32(neq0, vone_bits));
-        const float32x4_t mask1 = vreinterpretq_f32_u32(vandq_u32(neq1, vone_bits));
-
-        // FIXED: Compute displacements in double precision to match scalar path
-        // Convert each particle position to double, subtract in double, then convert back to float
-        float dx0_arr[4], dy0_arr[4], dx1_arr[4], dy1_arr[4];
-        
-        // First batch of 4
-        for (int j = 0; j < 4; ++j) {
-            double dx_d = static_cast<double>(leaf_x[i + j]) - px_d;
-            double dy_d = static_cast<double>(leaf_y[i + j]) - py_d;
-            dx0_arr[j] = static_cast<float>(dx_d);
-            dy0_arr[j] = static_cast<float>(dy_d);
-        }
-        
-        // Second batch of 4
-        for (int j = 0; j < 4; ++j) {
-            double dx_d = static_cast<double>(leaf_x[i + 4 + j]) - px_d;
-            double dy_d = static_cast<double>(leaf_y[i + 4 + j]) - py_d;
-            dx1_arr[j] = static_cast<float>(dx_d);
-            dy1_arr[j] = static_cast<float>(dy_d);
-        }
-
-        // Load the double-precision-computed displacements
-        const float32x4_t dx0 = vld1q_f32(dx0_arr);
-        const float32x4_t dx1 = vld1q_f32(dx1_arr);
-        const float32x4_t dy0 = vld1q_f32(dy0_arr);
-        const float32x4_t dy1 = vld1q_f32(dy1_arr);
-
-        // Compute r² = dx² + dy² + ε²
-        float32x4_t r2_0, r2_1;
-        #if defined(__aarch64__)
-        r2_0 = vfmaq_f32(vfmaq_f32(veps, dx0, dx0), dy0, dy0);
-        r2_1 = vfmaq_f32(vfmaq_f32(veps, dx1, dx1), dy1, dy1);
-        #else
-        r2_0 = vmlaq_f32(vmlaq_f32(veps, dx0, dx0), dy0, dy0);
-        r2_1 = vmlaq_f32(vmlaq_f32(veps, dx1, dx1), dy1, dy1);
-        #endif
-
-        // Fast reciprocal square root with Newton-Raphson refinement
-        float32x4_t inv_r0 = vrsqrteq_f32(r2_0);
-        float32x4_t inv_r1 = vrsqrteq_f32(r2_1);
-
-        // One Newton-Raphson iteration
-        float32x4_t inv_r0_sq = vmulq_f32(inv_r0, inv_r0);
-        float32x4_t inv_r1_sq = vmulq_f32(inv_r1, inv_r1);
-        
-        #if defined(__aarch64__)
-        inv_r0 = vmulq_f32(inv_r0, vfmsq_f32(vone_five, vhalf, vmulq_f32(r2_0, inv_r0_sq)));
-        inv_r1 = vmulq_f32(inv_r1, vfmsq_f32(vone_five, vhalf, vmulq_f32(r2_1, inv_r1_sq)));
-        #else
-        float32x4_t half_r2_inv0_sq = vmulq_f32(vhalf, vmulq_f32(r2_0, inv_r0_sq));
-        float32x4_t half_r2_inv1_sq = vmulq_f32(vhalf, vmulq_f32(r2_1, inv_r1_sq));
-        inv_r0 = vmulq_f32(inv_r0, vsubq_f32(vone_five, half_r2_inv0_sq));
-        inv_r1 = vmulq_f32(inv_r1, vsubq_f32(vone_five, half_r2_inv1_sq));
-        #endif
-
-        // Compute 1/r³ = (1/r) * (1/r²)
-        const float32x4_t inv_r3_0 = vmulq_f32(inv_r0, vmulq_f32(inv_r0, inv_r0));
-        const float32x4_t inv_r3_1 = vmulq_f32(inv_r1, vmulq_f32(inv_r1, inv_r1));
-
-        // Compute force magnitude (no G_GALACTIC to match test)
-        const float32x4_t s0 = vmulq_f32(mask0, vmulq_f32(vgi, vmulq_f32(vm0, inv_r3_0)));
-        const float32x4_t s1 = vmulq_f32(mask1, vmulq_f32(vgi, vmulq_f32(vm1, inv_r3_1)));
-
-        // Accumulate forces: F = s * dr
-        #if defined(__aarch64__)
-        acc_fx = vfmaq_f32(acc_fx, s0, dx0);
-        acc_fx = vfmaq_f32(acc_fx, s1, dx1);
-        acc_fy = vfmaq_f32(acc_fy, s0, dy0);
-        acc_fy = vfmaq_f32(acc_fy, s1, dy1);
-        #else
-        acc_fx = vmlaq_f32(acc_fx, s0, dx0);
-        acc_fx = vmlaq_f32(acc_fx, s1, dx1);
-        acc_fy = vmlaq_f32(acc_fy, s0, dy0);
-        acc_fy = vmlaq_f32(acc_fy, s1, dy1);
-        #endif
-    }
-
-    // Handle remaining 4-particle block with double precision
-    if (i + 3 < cnt) {
-        const float32x4_t vx0 = vld1q_f32(&leaf_x[i]);
-        const float32x4_t vy0 = vld1q_f32(&leaf_y[i]);
-        const float32x4_t vm0 = vld1q_f32(&leaf_m[i]);
-
-        const int32x4_t vidx0 = vaddq_s32(vdupq_n_s32(static_cast<int32_t>(i)), vidx_base);
-        const uint32x4_t neq0 = vmvnq_u32(vceqq_s32(vi_local, vidx0));
-        const float32x4_t mask0 = vreinterpretq_f32_u32(vandq_u32(neq0, vone_bits));
-
-        // FIXED: Double precision displacement computation
-        float dx0_arr[4], dy0_arr[4];
-        for (int j = 0; j < 4; ++j) {
-            double dx_d = static_cast<double>(leaf_x[i + j]) - px_d;
-            double dy_d = static_cast<double>(leaf_y[i + j]) - py_d;
-            dx0_arr[j] = static_cast<float>(dx_d);
-            dy0_arr[j] = static_cast<float>(dy_d);
-        }
-
-        const float32x4_t dx0 = vld1q_f32(dx0_arr);
-        const float32x4_t dy0 = vld1q_f32(dy0_arr);
-
-        #if defined(__aarch64__)
-        const float32x4_t r2_0 = vfmaq_f32(vfmaq_f32(veps, dx0, dx0), dy0, dy0);
-        #else
-        const float32x4_t r2_0 = vmlaq_f32(vmlaq_f32(veps, dx0, dx0), dy0, dy0);
-        #endif
-
-        float32x4_t inv_r0 = vrsqrteq_f32(r2_0);
-        const float32x4_t inv_r0_sq = vmulq_f32(inv_r0, inv_r0);
-        
-        #if defined(__aarch64__)
-        inv_r0 = vmulq_f32(inv_r0, vfmsq_f32(vone_five, vhalf, vmulq_f32(r2_0, inv_r0_sq)));
-        #else
-        const float32x4_t half_r2_inv0_sq = vmulq_f32(vhalf, vmulq_f32(r2_0, inv_r0_sq));
-        inv_r0 = vmulq_f32(inv_r0, vsubq_f32(vone_five, half_r2_inv0_sq));
-        #endif
-
-        const float32x4_t inv_r3_0 = vmulq_f32(inv_r0, vmulq_f32(inv_r0, inv_r0));
-        const float32x4_t s0 = vmulq_f32(mask0, vmulq_f32(vgi, vmulq_f32(vm0, inv_r3_0)));
-
-        #if defined(__aarch64__)
-        acc_fx = vfmaq_f32(acc_fx, s0, dx0);
-        acc_fy = vfmaq_f32(acc_fy, s0, dy0);
-        #else
-        acc_fx = vmlaq_f32(acc_fx, s0, dx0);
-        acc_fy = vmlaq_f32(acc_fy, s0, dy0);
-        #endif
-
-        i += 4;
-    }
-
-    // Horizontal reduction: sum all lanes to get scalar results
-    float fx_total, fy_total;
-    #if defined(__aarch64__)
-    fx_total = vaddvq_f32(acc_fx);
-    fy_total = vaddvq_f32(acc_fy);
-    #else
-    const float32x2_t sum_fx_lo = vadd_f32(vget_low_f32(acc_fx), vget_high_f32(acc_fx));
-    const float32x2_t sum_fy_lo = vadd_f32(vget_low_f32(acc_fy), vget_high_f32(acc_fy));
-    fx_total = vget_lane_f32(sum_fx_lo, 0) + vget_lane_f32(sum_fx_lo, 1);
-    fy_total = vget_lane_f32(sum_fy_lo, 0) + vget_lane_f32(sum_fy_lo, 1);
-    #endif
-
-    // FIXED: Handle remaining particles with scalar code using double precision
-    for (; i < cnt; ++i) {
-        if (static_cast<int>(i) == i_local) continue; // Skip self
-
-        // Use double precision for displacement calculation to match scalar path
-        const double dx_d = static_cast<double>(leaf_x[i]) - px_d;
-        const double dy_d = static_cast<double>(leaf_y[i]) - py_d;
-        const float dx = static_cast<float>(dx_d);
-        const float dy = static_cast<float>(dy_d);
-        
-        const float r2 = dx*dx + dy*dy + EPS_SQ;
-        const float inv_r = rsqrt_fast(r2);
-        const float inv_r3 = inv_r * inv_r * inv_r;
-        const float s = gi * leaf_m[i] * inv_r3;  // No G_GALACTIC
-        
-        fx_total += s * dx;
-        fy_total += s * dy;
-    }
-
-    // Write back accumulated forces
-    fx += fx_total;
-    fy += fy_total;
-}
-
-
 void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
     const QuadTreeNode& node, int i_local, float px_c, float py_c, float gi,
     float& fx, float& fy, float ox, float oy,
@@ -1193,11 +731,8 @@ void BarnesHutParticleSystem::process_leaf_forces_neon_centered(
     fy += fy_total;
 }
 
-void test_scaling_bottleneck() {
-}
 #define LIKELY(x) __builtin_expect(!!(x), 1)
 #define UNLIKELY(x) __builtin_expect(!!(x), 0)
-__attribute__((always_inline, hot))
 __attribute__((always_inline, hot))
 inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
     size_t i, float& fx, float& fy,
@@ -1389,10 +924,112 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
     return true;
 }
 
+void BarnesHutParticleSystem::calculate_center_of_mass(uint32_t node_index) {
+    QuadTreeNode& node = tree_nodes_[node_index];
+   
+    if (node.is_leaf) {
+        if (node.leaf_first == UINT32_MAX || node.leaf_last == UINT32_MAX) {
+            node.com_x = node.com_y = 0.0f;
+            node.total_mass = 0.0f;
+            node.bound_r = 0.0f;
+            return;
+        }
+
+        const uint32_t off = node.leaf_first;
+        const uint32_t cnt = node.leaf_last - node.leaf_first + 1;
+
+        float total_m = 0.0f, wx = 0.0f, wy = 0.0f;
+        
+        for (uint32_t t = 0; t < cnt; ++t) {
+            const float m = leaf_mass_[off + t];
+            total_m += m;
+            wx += leaf_pos_x_[off + t] * m;
+            wy += leaf_pos_y_[off + t] * m;
+        }
+
+        node.total_mass = total_m;
+        if (total_m > 0.0f) {
+            node.com_x = wx / total_m;
+            node.com_y = wy / total_m;
+        } else {
+            node.com_x = node.com_y = 0.0f;
+        }
+
+        float max_dist_sq = 0.0f;
+        for (uint32_t t = 0; t < cnt; ++t) {
+            const float dx = leaf_pos_x_[off + t] - node.com_x;
+            const float dy = leaf_pos_y_[off + t] - node.com_y;
+            const float dist_sq = dx*dx + dy*dy;
+            max_dist_sq = std::max(max_dist_sq, dist_sq);
+        }
+        node.bound_r = std::sqrt(max_dist_sq); 
+        
+        node.particle_count = static_cast<uint8_t>(std::min<uint32_t>(cnt, 255));
+        return;
+    }
+    
+    float total_mass = 0.0f;
+    float weighted_x = 0.0f;
+    float weighted_y = 0.0f;
+    
+    for (int i = 0; i < 4; ++i) {
+        if (node.children[i] != UINT32_MAX) {
+            calculate_center_of_mass(node.children[i]);  // Recursive call
+            const QuadTreeNode& child = tree_nodes_[node.children[i]];
+            
+            if (child.total_mass > 0.0f) {
+                weighted_x += child.com_x * child.total_mass;
+                weighted_y += child.com_y * child.total_mass;
+                total_mass += child.total_mass;
+            }
+        }
+    }
+    
+    if (total_mass > 0.0f) {
+        node.com_x = weighted_x / total_mass;
+        node.com_y = weighted_y / total_mass;
+        node.total_mass = total_mass;
+    } else {
+        node.com_x = node.com_y = 0.0f;
+        node.total_mass = 0.0f;
+    }
+    
+    float max_bound_r = 0.0f;
+    for (int i = 0; i < 4; ++i) {
+        if (node.children[i] != UINT32_MAX) {
+            const QuadTreeNode& child = tree_nodes_[node.children[i]];
+            
+            if (child.total_mass > 0.0f) {
+                const float dx = child.com_x - node.com_x;
+                const float dy = child.com_y - node.com_y;
+                const float dist_to_child_com = std::sqrt(dx*dx + dy*dy);
+                const float child_extent = dist_to_child_com + child.bound_r;
+                
+                max_bound_r = std::max(max_bound_r, child_extent);
+            }
+        }
+    }
+    node.bound_r = max_bound_r;
+}
+
+void BarnesHutParticleSystem::compute_frame_constants() {
+    calculate_bounds();
+    
+    const float world_span_x = float(bounds_max_x_ - bounds_min_x_);
+    const float world_span_y = float(bounds_max_y_ - bounds_min_y_);
+    const float world_scale = std::max(world_span_x, world_span_y);
+    
+    const float eps = config_.softening_rel * world_scale;
+    frame_eps2_ = eps * eps;
+    
+    root_com_x_ = tree_nodes_[root_node_index_].com_x;
+    root_com_y_ = tree_nodes_[root_node_index_].com_y;
+}
+
 void BarnesHutParticleSystem::integrate_verlet(float dt) {
     const float dt_half = 0.5f * dt;
 
-    // A0: current accelerations from previous forces
+    // 0: current accelerations from previous forces
     for (size_t i = 0; i < particle_count_; ++i) {
         const float inv_m = 1.0f / masses_[i];
         current_accel_x_[i] = forces_x_[i] * inv_m;
@@ -1426,39 +1063,12 @@ void BarnesHutParticleSystem::integrate_verlet(float dt) {
         velocities_y_[i] += (forces_y_[i] * inv_m) * dt_half;
     }
 
-    // Optional: apply damping symmetrically at the end
-    if (damping_ != 1.0f) {
-        for (size_t i = 0; i < particle_count_; ++i) {
-            velocities_x_[i] *= damping_;
-            velocities_y_[i] *= damping_;
-        }
-    }
-
     // Periodic Morton reorder check
     if (morton_ordering_enabled_ && (iteration_count_ % 30 == 0)) {
         check_for_morton_reordering_need();
     }
 }
 
-
-
-
-void BarnesHutParticleSystem::prepare_render_data() {
-    for (size_t i = 0; i < particle_count_; ++i) {
-        render_positions_[i * 2 + 0] = static_cast<float>(positions_x_[i]);
-        render_positions_[i * 2 + 1] = static_cast<float>(positions_y_[i]);
-        
-        render_colors_[i * 3 + 0] = colors_r_[i];
-        render_colors_[i * 3 + 1] = colors_g_[i];
-        render_colors_[i * 3 + 2] = colors_b_[i];
-        
-        render_positions_x_[i] = static_cast<float>(positions_x_[i]);
-        render_positions_y_[i] = static_cast<float>(positions_y_[i]);
-        render_velocities_x_[i] = static_cast<float>(velocities_x_[i]);
-        render_velocities_y_[i] = static_cast<float>(velocities_y_[i]);
-        render_masses_[i] = static_cast<float>(masses_[i]);
-    }
-}
 
 void BarnesHutParticleSystem::calculate_bounds() {
     if (particle_count_ == 0) return;
@@ -1477,6 +1087,191 @@ void BarnesHutParticleSystem::calculate_bounds() {
     bounds_max_x_ = max_x;
     bounds_min_y_ = min_y;
     bounds_max_y_ = max_y;
+}
+
+
+//===========================================================================================
+//==                                  RENDER DATA                                         ==
+//===========================================================================================
+
+void BarnesHutParticleSystem::prepare_render_data() {
+    for (size_t i = 0; i < particle_count_; ++i) {
+        render_positions_[i * 2 + 0] = static_cast<float>(positions_x_[i]);
+        render_positions_[i * 2 + 1] = static_cast<float>(positions_y_[i]);
+        
+        render_colors_[i * 3 + 0] = colors_r_[i];
+        render_colors_[i * 3 + 1] = colors_g_[i];
+        render_colors_[i * 3 + 2] = colors_b_[i];
+        
+        render_positions_x_[i] = static_cast<float>(positions_x_[i]);
+        render_positions_y_[i] = static_cast<float>(positions_y_[i]);
+        render_velocities_x_[i] = static_cast<float>(velocities_x_[i]);
+        render_velocities_y_[i] = static_cast<float>(velocities_y_[i]);
+        render_masses_[i] = static_cast<float>(masses_[i]);
+    }
+}
+
+std::vector<BarnesHutParticleSystem::QuadTreeBox> BarnesHutParticleSystem::get_quadtree_boxes() const {
+    /*
+     * Return a list of AABBs for all quadtree nodes, for visualisation/debug
+     *
+     * INPUT:  Visualize_quadtree, tree_valid, tree_nodes_ root_node_index_
+     * OUTPUT: returns std::vector<QuadTreeBox> possibly empty
+     * */
+    std::vector<QuadTreeBox> boxes;
+    
+    if (!visualize_quadtree_ || !tree_valid_ || tree_nodes_.empty()) {
+        return boxes;
+    }
+
+    if (root_node_index_ != UINT32_MAX && root_node_index_ < tree_nodes_.size()) {
+        collect_quadtree_boxes(root_node_index_, boxes);
+    }
+    
+    return boxes;
+}
+
+void BarnesHutParticleSystem::collect_quadtree_boxes(uint32_t node_index, std::vector<QuadTreeBox>& boxes) const {
+    if (node_index >= tree_nodes_.size()) return;
+    
+    const QuadTreeNode& node = tree_nodes_[node_index];
+    
+    boxes.emplace_back(
+        static_cast<float>(node.min_x),
+        static_cast<float>(node.min_y),
+        static_cast<float>(node.max_x),
+        static_cast<float>(node.max_y),
+        static_cast<int>(node.depth),
+        static_cast<int>(node.particle_count),
+        node.is_leaf != 0
+    );
+    
+    if (!node.is_leaf) {
+        for (int i = 0; i < 4; ++i) {
+            if (node.children[i] != UINT32_MAX) {
+                collect_quadtree_boxes(node.children[i], boxes);
+            }
+        }
+    }
+}
+
+BarnesHutParticleSystem::TreeNode BarnesHutParticleSystem::get_tree_visualization() const {
+    if (!tree_valid_ || root_node_index_ == UINT32_MAX) {
+        return TreeNode{};
+    }
+    return build_tree_visualization(root_node_index_);
+}
+
+BarnesHutParticleSystem::TreeNode BarnesHutParticleSystem::build_tree_visualization(uint32_t node_index) const {
+    const QuadTreeNode& node = tree_nodes_[node_index];
+    
+    TreeNode viz_node;
+    viz_node.center_x = (node.min_x + node.max_x) * 0.5;
+    viz_node.center_y = (node.min_y + node.max_y) * 0.5;
+    viz_node.width = node.width();
+    viz_node.is_leaf = node.is_leaf;
+    viz_node.particle_count = node.particle_count;
+    
+    if (!node.is_leaf) {
+        for (int i = 0; i < 4; ++i) {
+            if (node.children[i] != UINT32_MAX) {
+                viz_node.children.push_back(build_tree_visualization(node.children[i]));
+            }
+        }
+    }
+    
+    return viz_node;
+}
+
+
+
+
+//===========================================================================================
+//==                                    Particle stuff?                                   ==
+//===========================================================================================
+
+bool BarnesHutParticleSystem::add_particle(const Vec2& pos, const Vec2& vel, float mass, const Vec3& color) {
+    if (particle_count_ >= max_particles_) {
+        return false;
+    }
+    
+    size_t idx = particle_count_;
+    positions_x_[idx] = pos.x;
+    positions_y_[idx] = pos.y;
+    velocities_x_[idx] = vel.x;
+    velocities_y_[idx] = vel.y;
+    forces_x_[idx] = 0.0f;
+    forces_y_[idx] = 0.0f;
+    masses_[idx] = mass;
+    colors_r_[idx] = color.x;
+    colors_g_[idx] = color.y;
+    colors_b_[idx] = color.z;
+    
+    particle_count_++;
+    tree_valid_ = false; 
+    
+    if (morton_ordering_enabled_ && particle_count_ >= 100) {
+        particles_need_reordering_ = true;
+    }
+    
+    ParticleAddedEvent event{idx, static_cast<float>(pos.x), static_cast<float>(pos.y), 
+                           static_cast<float>(vel.x), static_cast<float>(vel.y), 
+                           mass, color.x, color.y, color.z};
+    event_bus_.emit(Events::PARTICLE_ADDED, event);
+    
+    return true;
+}
+
+void BarnesHutParticleSystem::clear_particles() {
+    particle_count_ = 0;
+    iteration_count_ = 0;
+    tree_valid_ = false;
+    next_free_node_ = 0;
+    current_frame_ = 0;
+    previous_positions_.clear();
+    particles_need_reordering_ = false;  // NEW: Reset reordering flag
+}
+
+void BarnesHutParticleSystem::remove_particle(size_t index) {
+    if (index >= particle_count_) return;
+    
+    if (index < particle_count_ - 1) {
+        positions_x_[index] = positions_x_[particle_count_ - 1];
+        positions_y_[index] = positions_y_[particle_count_ - 1];
+        velocities_x_[index] = velocities_x_[particle_count_ - 1];
+        velocities_y_[index] = velocities_y_[particle_count_ - 1];
+        forces_x_[index] = forces_x_[particle_count_ - 1];
+        forces_y_[index] = forces_y_[particle_count_ - 1];
+        masses_[index] = masses_[particle_count_ - 1];
+        colors_r_[index] = colors_r_[particle_count_ - 1];
+        colors_g_[index] = colors_g_[particle_count_ - 1];
+        colors_b_[index] = colors_b_[particle_count_ - 1];
+    }
+    
+    particle_count_--;
+    tree_valid_ = false;
+    
+    if (morton_ordering_enabled_) {
+        particles_need_reordering_ = true;
+    }
+}
+
+void BarnesHutParticleSystem::set_boundary(float min_x, float max_x, float min_y, float max_y) {
+    bounds_min_x_ = min_x;
+    bounds_max_x_ = max_x;
+    bounds_min_y_ = min_y;
+    bounds_max_y_ = max_y;
+    tree_valid_ = false;  
+    
+    if (morton_ordering_enabled_) {
+        particles_need_reordering_ = true;
+    }
+}
+
+void BarnesHutParticleSystem::set_config(const Config& config) {
+    config_ = config;
+    config_.theta_squared = config_.theta * config_.theta;
+    tree_valid_ = false;  
 }
 
 
@@ -1507,116 +1302,27 @@ Vec3 BarnesHutParticleSystem::get_color(size_t index) const {
 }
 
 
-BarnesHutParticleSystem::TreeNode BarnesHutParticleSystem::get_tree_visualization() const {
-    if (!tree_valid_ || root_node_index_ == UINT32_MAX) {
-        return TreeNode{};
-    }
-    return build_tree_visualization(root_node_index_);
-}
+//===========================================================================================
+//==                                   UPDATE                                              ==
+//===========================================================================================
 
-BarnesHutParticleSystem::TreeNode BarnesHutParticleSystem::build_tree_visualization(uint32_t node_index) const {
-    const QuadTreeNode& node = tree_nodes_[node_index];
-    
-    TreeNode viz_node;
-    viz_node.center_x = (node.min_x + node.max_x) * 0.5;
-    viz_node.center_y = (node.min_y + node.max_y) * 0.5;
-    viz_node.width = node.width();
-    viz_node.is_leaf = node.is_leaf;
-    viz_node.particle_count = node.particle_count;
-    
-    if (!node.is_leaf) {
-        for (int i = 0; i < 4; ++i) {
-            if (node.children[i] != UINT32_MAX) {
-                viz_node.children.push_back(build_tree_visualization(node.children[i]));
-            }
-        }
-    }
-    
-    return viz_node;
-}
-
-void BarnesHutParticleSystem::prefetch_tree_nodes() const {
-    if (!tree_valid_ || tree_nodes_.empty()) return;
-    
-    size_t prefetch_count = std::min(size_t(64), tree_nodes_.size());
-    
-    for (size_t i = 0; i < prefetch_count; ++i) {
-        __builtin_prefetch(&tree_nodes_[i], 0, 3);  // GCC builtin for cache prefetch
-    }
-}
 
 void BarnesHutParticleSystem::update(float dt) {
     if (particle_count_ == 0) return;
-    
-    auto start_time = std::chrono::high_resolution_clock::now();
     current_frame_++;
-    
-    // Reset profiling counters
-    reset_profiling_counters();
-    
-    // NEW: Apply Morton reordering if needed and beneficial
-    if (morton_ordering_enabled_ && should_apply_morton_ordering()) {
-        auto morton_start = std::chrono::high_resolution_clock::now();
-        sort_by_morton_key();
-        auto morton_end = std::chrono::high_resolution_clock::now();
-        perf_stats_.morton_ordering_time_ms = std::chrono::duration<float, std::milli>(morton_end - morton_start).count();
-        perf_stats_.morton_ordering_applied = true;
-    } else {
-        perf_stats_.morton_ordering_time_ms = 0.0f;
-        perf_stats_.morton_ordering_applied = false;
-    }
-    
-    // ONLY do initial setup if forces haven't been calculated yet
-    // (For first frame or after major changes)
-    bool need_initial_forces = (iteration_count_ == 0) || 
-                               (std::all_of(forces_x_.begin(), forces_x_.begin() + particle_count_, 
-                                          [](float f) { return f == 0.0f; }));
-    
+    sort_by_morton_key();
+    bool need_initial_forces = (iteration_count_ == 0) || (std::all_of(forces_x_.begin(), forces_x_.begin() + particle_count_, [](float f) { return f == 0.0f; }));
     if (need_initial_forces) {
-        // Initial force calculation for first step
         std::fill(forces_x_.begin(), forces_x_.begin() + particle_count_, 0.0);
         std::fill(forces_y_.begin(), forces_y_.begin() + particle_count_, 0.0);
-        
         calculate_bounds();
-        auto tree_start = std::chrono::high_resolution_clock::now();
-        build_tree();  // Initial tree build
-        auto tree_end = std::chrono::high_resolution_clock::now();
-        perf_stats_.tree_build_time_ms = std::chrono::duration<float, std::milli>(tree_end - tree_start).count();
-        perf_stats_.tree_was_rebuilt = true;
-        
-        auto force_start = std::chrono::high_resolution_clock::now();
         calculate_forces_barnes_hut();
-        auto force_end = std::chrono::high_resolution_clock::now();
-        perf_stats_.tree_traversal_time_ms = std::chrono::duration<float, std::milli>(force_end - force_start).count();
-    } else {
-        perf_stats_.tree_build_time_ms = 0.0f;
-        perf_stats_.tree_traversal_time_ms = 0.0f;
-        perf_stats_.tree_was_rebuilt = false;
     }
-    
-    // Verlet integration handles ALL the physics:
-    // - Position updates
-    // - Tree rebuilding at new positions  
-    // - Force recalculation
-    // - Final velocity updates
-    auto integration_start = std::chrono::high_resolution_clock::now();
     integrate_verlet(dt);
-    auto integration_end = std::chrono::high_resolution_clock::now();
-    perf_stats_.integration_time_ms = std::chrono::duration<float, std::milli>(integration_end - integration_start).count();
-    
-    // Update performance stats
-    auto total_end = std::chrono::high_resolution_clock::now();
-    float total_frame_time = std::chrono::duration<float, std::milli>(total_end - start_time).count();
-    update_detailed_performance_stats(total_frame_time);
-    update_performance_stats();
-    
     prepare_render_data();
-    
     iteration_count_++;
-     
     PhysicsUpdateEvent physics_event{dt, particle_count_, iteration_count_};
     event_bus_.emit(Events::PHYSICS_UPDATE, physics_event);
-    
     RenderUpdateEvent render_event{
         render_positions_.data(), 
         render_colors_.data(), 
@@ -1626,6 +1332,11 @@ void BarnesHutParticleSystem::update(float dt) {
     };
     event_bus_.emit(Events::RENDER_UPDATE, render_event);
 }
+
+
+//===========================================================================================
+//==                                   TESTING HOOK                                        ==
+//===========================================================================================
 
 
 #ifdef BH_TESTING

@@ -30,9 +30,6 @@ static constexpr float EPS_SQ = DEFAULT_SOFTENING_KPC * DEFAULT_SOFTENING_KPC ;
 
 class BarnesHutParticleSystem {
 public:
-    void get_perfomance_stats();
-    void print_detailed_tree_performance() const;
-    void calculate_forces_barnes_hut_with_detailed_timing();
     struct QuadTreeBox {
         float min_x, min_y, max_x, max_y;  // Bounding box coordinates
         int depth;                         // Tree depth (for coloring)
@@ -78,108 +75,13 @@ public:
     };
 
     const Config& get_config() const { return config_; }
-    struct PerformanceStats {
-        float tree_build_time_ms;
-        float force_calculation_time_ms;
-        float integration_time_ms;
-        size_t tree_nodes_created;
-        size_t tree_depth;
-        mutable size_t force_calculations;      // FIXED: Made mutable for const methods
-        mutable size_t approximations_used;    // FIXED: Made mutable for const methods
-        bool tree_was_rebuilt;
-        float cache_hit_ratio;
-        float efficiency_ratio;  // approximations / total_calculations
-        float tree_traversal_time_ms;
-        float boundary_forces_time_ms;
-        float gravity_forces_time_ms;
-        size_t tree_nodes_visited;
-        size_t leaf_nodes_hit;
-        size_t internal_nodes_hit;
-        float avg_tree_depth_per_particle;
-        float particles_per_second;
-        float force_calculations_per_second;
-        size_t cache_misses;
-        size_t total_theta_tests;
-        size_t theta_tests_passed;
-        float theta_pass_ratio;
-        
-        // Performance comparison metrics
-        size_t brute_force_equivalent_ops;
-        float speedup_vs_brute_force;
-        float memory_usage_mb;
-        
-        // NEW: Morton ordering performance metrics
-        float morton_ordering_time_ms;
-        bool morton_ordering_applied;
 
-        float pure_tree_traversal_time_ms;      // Time spent navigating tree structure
-        float pure_force_computation_time_ms;   // Time spent on actual force calculations
-        float theta_evaluation_time_ms;         // Time spent evaluating theta conditions
-        float node_access_time_ms;              // Time spent accessing/loading tree nodes
-        float cache_miss_penalty_time_ms;       // Estimated time lost to cache misses
-        
-        // Tree traversal patterns
-        size_t nodes_per_particle_avg;          // Average nodes visited per particle
-        size_t max_nodes_per_particle;          // Maximum nodes visited for any particle
-        float tree_traversal_efficiency;        // Nodes visited / theoretical minimum
-        
-        // Cache performance estimates
-        size_t estimated_cache_hits;
-        size_t estimated_cache_misses;
-        float cache_efficiency_ratio;
-        
-        // Theta condition statistics
-        size_t theta_early_exits;               // Theta conditions that allowed early exit
-        size_t theta_deep_traversals;           // Cases where theta forced deep traversal
-        float avg_theta_test_depth;
-        
-        // Default constructor
-        PerformanceStats() {
-            // Initialize all fields to zero
-            tree_build_time_ms = 0.0f;
-            force_calculation_time_ms = 0.0f;
-            integration_time_ms = 0.0f;
-            tree_nodes_created = 0;
-            tree_depth = 0;
-            force_calculations = 0;
-            approximations_used = 0;
-            tree_was_rebuilt = false;
-            cache_hit_ratio = 0.0f;
-            efficiency_ratio = 0.0f;
-            
-            // Existing fields
-            tree_traversal_time_ms = 0.0f;
-            boundary_forces_time_ms = 0.0f;
-            gravity_forces_time_ms = 0.0f;
-            tree_nodes_visited = 0;
-            leaf_nodes_hit = 0;
-            internal_nodes_hit = 0;
-            avg_tree_depth_per_particle = 0.0f;
-            particles_per_second = 0.0f;
-            force_calculations_per_second = 0.0f;
-            cache_misses = 0;
-            total_theta_tests = 0;
-            theta_tests_passed = 0;
-            theta_pass_ratio = 0.0f;
-            brute_force_equivalent_ops = 0;
-            speedup_vs_brute_force = 0.0f;
-            memory_usage_mb = 0.0f;
-            
-            // NEW: Morton ordering fields
-            morton_ordering_time_ms = 0.0f;
-            morton_ordering_applied = false;
-            avg_theta_test_depth = 0.0f;
-        }
-    };
-
-    // Tree visualization (for debugging)
     struct TreeNode {
         double center_x, center_y, width;
         bool is_leaf;
         size_t particle_count;
         std::vector<TreeNode> children;
         
-        // Default constructor
         TreeNode() 
             : center_x(0.0), center_y(0.0), width(0.0)
             , is_leaf(true), particle_count(0) 
@@ -212,7 +114,6 @@ public:
     bool is_morton_ordering_enabled() const { return morton_ordering_enabled_; }
 
     // Performance and debugging
-    const PerformanceStats& get_performance_stats() const { return perf_stats_; }
     size_t get_particle_count() const { return particle_count_; }
     size_t get_max_particles() const { return max_particles_; }
 
@@ -244,7 +145,6 @@ public:
     // Advanced optimization methods
     void optimize_particle_layout();                    // Morton Z-order sorting for cache locality
     void fix_overlapping_particles_advanced();          // Advanced particle separation with spatial hashing
-    void compact_tree_for_cache_efficiency();          // Reorganize tree nodes for better memory access
     void adaptive_theta_optimization();                 // Find optimal theta value automatically
     void run_comprehensive_optimization();              // Run all optimizations together
 
@@ -252,7 +152,6 @@ private:
     #ifdef BH_TESTING
         friend struct BHTestHooks;
     #endif
-    //inline bool calculate_force_on_particle_iterative(size_t i, float& fx, float& fy, const float* positions_x, const float* positions_y, const float* masses) const;
     struct TraversalFrame {
         uint32_t node_idx;
         #ifdef ENABLE_DEPTH_STATS
@@ -277,21 +176,12 @@ private:
 
 
     std::array<uint32_t, 1u << 11> radix_histogram_{};
-    uint32_t last_morton_frame_;
-    mutable std::chrono::high_resolution_clock::time_point traversal_timer_start_;
-    mutable std::chrono::high_resolution_clock::time_point force_timer_start_;
-    mutable float accumulated_traversal_time_;
-    mutable float accumulated_force_time_;
-    mutable float accumulated_theta_time_;
-    mutable size_t current_particle_nodes_visited_;
-    mutable size_t max_nodes_for_any_particle_;
     std::vector<float> current_accel_x_, current_accel_y_;  // Move from local in integrate_verlet
     std::vector<StackItem> node_stack_;                     // Move from local in build_tree
     size_t indices_filled_;
 
 
     // Cache performance estimator
-    void estimate_cache_performance() const;
 
     std::vector<float> leaf_pos_x_, leaf_pos_y_, leaf_mass_;
     std::vector<uint32_t> leaf_idx_;        // original particle indices in leaf order
@@ -309,7 +199,6 @@ private:
     std::vector<uint64_t> morton_keys_;           // Morton keys for each particle
     std::vector<size_t> morton_indices_;          // Sorted particle indices by Morton key
     std::vector<size_t> tmp_indices_;             // Temporary buffer for radix sort
-    std::vector<int> radix_count_;
     void build_tree_morton_iterative();          // O(N) Morton-based tree builder
     void apply_morton_permutation_to_arrays();
     void sort_by_morton_key();                   // Sort particles by Morton key
@@ -351,14 +240,6 @@ private:
             return std::max(max_x - min_x, max_y - min_y); 
         }
     };
-    void process_leaf_forces_neon(
-    const QuadTreeNode& node,
-    int i_local,              
-    float px, float py, float gi,
-    float& fx, float& fy,     // ADD THESE - missing from your header
-    const float* __restrict leaf_x,
-    const float* __restrict leaf_y,
-    const float* __restrict leaf_m) const;
      inline bool calculate_force_on_particle_iterative(
         size_t i, float& fx, float& fy, 
         const float* positions_x, const float* positions_y, const float* masses) const;
@@ -415,7 +296,6 @@ private:
     Config config_;
     
     // Performance tracking
-    mutable PerformanceStats perf_stats_;  // FIXED: Made mutable for const methods
     EventBus& event_bus_;
     size_t iteration_count_;
 
@@ -437,22 +317,17 @@ private:
     
     // Force calculation
     void calculate_forces_barnes_hut();
-    void calculate_force_on_particle(size_t particle_index, uint32_t node_index, double& force_x, double& force_y, int depth = 0) const;
     void compute_frame_constants();
     
     // Tree optimization and caching
     bool should_rebuild_tree() const;
-    void compact_tree();  // Remove unused nodes for better cache locality
     
     // NEW: Morton ordering methods
     bool should_apply_morton_ordering() const;         // Determine when to apply Morton ordering
     void apply_morton_ordering();                      // Apply Morton Z-order reordering
     void check_for_morton_reordering_need();          // Check if particles have moved enough to warrant reordering
     
-    // Physics integration
-    void apply_boundary_forces();
-    void apply_gravity_forces();
-    void integrate_verlet(float dt);  // More stable than Leapfrog for large dt
+    void integrate_verlet(float dt);  
     
     // Utility methods
     void prepare_render_data();

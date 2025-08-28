@@ -1,0 +1,65 @@
+# ==== Build directories ====
+/build/
+/build_*/
+/build-*/
+/build_test/
+/cmake-build-*/
+/out/
+/bin/
+/obj/
+/dist/
+
+# ==== CMake-generated files (in any dir) ====
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+
+# Only ignore Makefiles in build dirs (don’t block a future top-level Makefile)
+build*/Makefile
+cmake-build-*/Makefile
+out/Makefile
+bin/Makefile
+obj/Makefile
+dist/Makefile
+
+# Compilation database (ignore if you don’t want to commit it)
+compile_commands.json
+
+# ==== Compiled artifacts ====
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.lib
+*.so*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.dSYM/
+*.pdb
+*.exp
+*.ilk
+
+# ==== Coverage / profiling ====
+*.gcno
+*.gcda
+*.gcov
+*.lcov
+*.profraw
+*.profdata
+
+# ==== IDE/editor/system ====
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-*
+.DS_Store
+Thumbs.db
+
+# ==== App/runtime state ====
+imgui.ini      # if you don't want UI state committed
+

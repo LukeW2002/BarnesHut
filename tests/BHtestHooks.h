@@ -40,12 +40,25 @@ struct BHTestHooks {
 
     // IMPORTANT: take a node index instead of the private type to keep tests decoupled
     static void leaf_neon_at(const BarnesHutParticleSystem& s,
-                             uint32_t node_index,
-                             int i_local, float px, float py, float gi,
-                             float& fx, float& fy,
-                             const float* leaf_x, const float* leaf_y, const float* leaf_m) {
-        const auto& node = s.tree_nodes_[node_index];
-        s.process_leaf_forces_neon(node, i_local, px, py, gi, fx, fy, leaf_x, leaf_y, leaf_m);
-    }
+                         uint32_t node_index,
+                         int i_local, float px, float py, float gi,
+                         float& fx, float& fy,
+                         const float* leaf_x, const float* leaf_y, const float* leaf_m)
+{
+    const auto& node = s.tree_nodes_[node_index];
+
+    // Use the same origin as the main traversal: root COM
+    const float ox = s.tree_nodes_[s.root_node_index_].com_x;
+    const float oy = s.tree_nodes_[s.root_node_index_].com_y;
+
+    // Center the particle coordinates once
+    const float px_c = px - ox;
+    const float py_c = py - oy;
+
+    // Call the centered NEON kernel (returns forces *without* G_GALACTIC scaling)
+    s.process_leaf_forces_neon_centered(node, i_local, px_c, py_c, gi,
+                                        fx, fy, ox, oy,
+                                        leaf_x, leaf_y, leaf_m);
+}
 };
 

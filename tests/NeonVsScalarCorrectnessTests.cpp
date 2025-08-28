@@ -57,8 +57,8 @@ TEST(NEONLeaf, MatchesScalarReference) {
     float inv = 1.0f / std::sqrt(r2);
     float inv3 = inv * inv * inv; 
     float s = gi * S.leaf_m[off+t] * inv3;
-    fxS += s * dx*G_GALACTIC; 
-    fyS += s * dy*G_GALACTIC;
+    fxS += s * dx; 
+    fyS += s * dy;
   }
 
   // Should handle overlapping particles gracefully (softening prevents division by zero)
