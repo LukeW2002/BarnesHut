@@ -1,5 +1,0 @@
-if(EXISTS "/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/bh_tests[1]_tests.cmake")
-  include("/Users/luke/Projects/refactorBarnesHuttMrkIII/build_test/bh_tests[1]_tests.cmake")
-else()
-  add_test(bh_tests_NOT_BUILT bh_tests_NOT_BUILT)
-endif()

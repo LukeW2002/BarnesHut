@@ -63,3 +63,9 @@ Thumbs.db
 # ==== App/runtime state ====
 imgui.ini      # if you don't want UI state committed
 
+/build_test/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
