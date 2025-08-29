@@ -8,6 +8,8 @@
 #include <iostream>
 #include <unordered_map> 
 #include <cmath>          
+#include "Bounds.hpp"
+#include "SortFactory.hpp"
 
 //#define USE_HOME_QUADRANT_FIRST  // Comment out to use Morton order instead
 #define USE_MORTON_ORDER      // Uncomment for Morton traversal
@@ -30,6 +32,7 @@ static constexpr float EPS_SQ = DEFAULT_SOFTENING_KPC * DEFAULT_SOFTENING_KPC ;
 
 class BarnesHutParticleSystem {
 public:
+
     //===========================================================================================
     //==                                   CONFIGURATION                                       ==
     //===========================================================================================
@@ -180,6 +183,12 @@ private:
     #endif
 
     //===========================================================================================
+    //==                                   INJECTION                                           ==
+    //===========================================================================================
+    using DefaultSort = SortFactory<MortonPolicy, RadixPolicy>;
+
+
+    //===========================================================================================
     //==                                   DATA STRUCTURES                                     ==
     //===========================================================================================
 
@@ -234,6 +243,9 @@ private:
         inline float width() const { 
             return std::max(max_x - min_x, max_y - min_y); 
         }
+        geom::AABBf bounds() const noexcept {
+            return geom::AABBf{min_x, min_y, max_x, max_y};
+        }
     };
 
     //===========================================================================================
@@ -254,12 +266,12 @@ private:
     float bounce_force_;
     float damping_;
     Vector2d gravity_;
-    double bounds_min_x_, bounds_max_x_;
-    double bounds_min_y_, bounds_max_y_;
+    float bounds_min_x_, bounds_max_x_;
+    float bounds_min_y_, bounds_max_y_;
     mutable float frame_eps2_;               // Cached adaptive softening squared  
     mutable float root_com_x_, root_com_y_;  // Cached root center-of-mass
 
-    // Particle data (SOA for cache efficiency) - using double for precision
+    // Particle data 
     std::vector<float> positions_x_, positions_y_;
     std::vector<float> velocities_x_, velocities_y_;
     std::vector<float> forces_x_, forces_y_;
@@ -358,6 +370,8 @@ private:
 
     void build_tree_morton_iterative();          // O(N) Morton-based tree builder
     void apply_morton_permutation_to_arrays();
+
+    void ensure_keys_capacity(std::size_t n);    // maintins Identity index array wihtout rewrite
     void sort_by_morton_key();                   // Sort particles by Morton key
     void radix_sort_indices();                   // Fast radix sort for Morton keys
     void ensure_indices_upto(size_t N);

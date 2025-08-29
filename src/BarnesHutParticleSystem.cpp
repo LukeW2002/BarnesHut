@@ -8,7 +8,7 @@
 #include <random>
 #include <arm_neon.h>
 #include <numeric>
-
+#include "Bounds.hpp"
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -125,32 +125,36 @@ private:
 
 class MortonEncoder {
 public:
-    static uint64_t encode_position(double x, double y, double min_x, double max_x, 
-                                   double min_y, double max_y) {
-        /* Normalises [x,y] to [0,1] using current world bounds; clamps degenerate
-           ranges to 1.0 to avoid division by zero
-           Quantises to 21-bit integer coord.
-           Interleaves bits MortonCode to produce a 42-bit Z-order key
-           
-            INPUTS:  x; y; min_x; max_y; min_y; max_y
-            OUTPUS: uint64_t morton_key
-        */
-        double range_x = max_x - min_x;
-        double range_y = max_y - min_y;
-        
-        if (range_x < 1e-10) range_x = 1.0;
-        if (range_y < 1e-10) range_y = 1.0;
-        
-        double norm_x = std::clamp((x - min_x) / range_x, 0.0, 1.0);
-        double norm_y = std::clamp((y - min_y) / range_y, 0.0, 1.0);
-        
-        const uint32_t max_coord = (1U << 21) - 1;
-        uint32_t ix = static_cast<uint32_t>(norm_x * max_coord);
-        uint32_t iy = static_cast<uint32_t>(norm_y * max_coord);
-        
+    static uint64_t encode_position(float x, float y, const geom::AABBf& b) noexcept {
+        const double rx = std::max<double>(b.max_x - b.min_x, 1e-10);
+        const double ry = std::max<double>(b.max_y - b.min_y, 1e-10);
+        const float  nx = std::clamp<float>(float((x - b.min_x) / rx), 0.0f, 1.0f);
+        const float  ny = std::clamp<float>(float((y - b.min_y) / ry), 0.0f, 1.0f);
+
+        constexpr uint32_t maxc = (1u << 21) - 1;
+        const uint32_t ix = uint32_t(nx * maxc);
+        const uint32_t iy = uint32_t(ny * maxc);
         return MortonCode::encode_morton_2d(ix, iy);
     }
+
+    static void encode_morton_keys(const float* xs, const float* ys,
+                                   uint64_t* out_keys, std::size_t n,
+                                   const geom::AABBf& b, bool parallel) noexcept
+    {
+    #ifdef _OPENMP
+        if (parallel && n > 1000) {
+            #pragma omp parallel for
+            for (std::size_t i = 0; i < n; ++i)
+                out_keys[i] = encode_position(xs[i], ys[i], b);
+        } else
+    #endif
+        {
+            for (std::size_t i = 0; i < n; ++i)
+                out_keys[i] = encode_position(xs[i], ys[i], b);
+        }
+    }
 };
+
 
 inline void BarnesHutParticleSystem::radix_sort_indices() {
     /* 
@@ -225,6 +229,18 @@ inline void BarnesHutParticleSystem::ensure_indices_upto(size_t N) {
     else { std::iota(morton_indices_.begin(), morton_indices_.begin()+N, 0); indices_filled_ = N; }
 }
 
+
+inline void fill_iota(std::uint32_t* indices, std::size_t n) noexcept {
+    //Fill indices with 0..n-1
+    for (std::size_t i = 0; i < n; ++i) indices[i] = static_cast<std::uint32_t>(i);
+}
+
+inline void BarnesHutParticleSystem::ensure_keys_capacity(std::size_t n) {
+
+    if (morton_keys_.size() < n) morton_keys_.resize(max_particles_);
+}
+
+
 inline void BarnesHutParticleSystem::sort_by_morton_key() {
     // 1. Ensures Morton_keys_ has capacity pre-sized to max_particles_
     // 2. Waterline fills morton_indices_ with [0,(N-1)]  
@@ -234,32 +250,27 @@ inline void BarnesHutParticleSystem::sort_by_morton_key() {
     // INPUTS:  positions_x_; positions_y_; particle_count_
     // OUTPUTS: morton_keys_[0,N) filled; morton_indices_[0,N) sorted by 
     //
-    const size_t N = particle_count_;
-    if (morton_keys_.size() < N) morton_keys_.resize(max_particles_);
-    ensure_indices_upto(N);
+    const std::size_t N = particle_count_;
 
-    #ifdef _OPENMP
-    if (config_.enable_threading && N > 1000) {
-        #pragma omp parallel for
-        for (size_t i = 0; i < N; ++i) {
-            morton_keys_[i] = MortonEncoder::encode_position(
-                static_cast<double>(positions_x_[i]),
-                static_cast<double>(positions_y_[i]),
-                bounds_min_x_, bounds_max_x_, bounds_min_y_, bounds_max_y_);
-        }
-    } else
-    #endif
-    {
-        for (size_t i = 0; i < N; ++i) {
-            morton_keys_[i] = MortonEncoder::encode_position(
-                positions_x_[i], positions_y_[i],
-                bounds_min_x_, bounds_max_x_,
-                bounds_min_y_, bounds_max_y_);
-        }
-    }
+    ensure_keys_capacity(N);
+    ensure_indices_upto(N);           
+    const geom::AABBf world{bounds_min_x_, bounds_min_y_,bounds_max_x_, bounds_max_y_}; 
+
+
+    MortonEncoder::encode_morton_keys(
+        positions_x_.data(),
+        positions_y_.data(),
+        morton_keys_.data(),
+        N,
+        world,
+        config_.enable_threading
+    );
 
     radix_sort_indices();
 }
+
+
+
 
 std::array<std::pair<size_t, size_t>, 4> BarnesHutParticleSystem::split_morton_range(size_t first, size_t last, int depth) const {
     /*
@@ -1477,7 +1488,6 @@ Vec3 BarnesHutParticleSystem::get_color(size_t index) const {
 void BarnesHutParticleSystem::update(float dt) {
     if (particle_count_ == 0) return;
     current_frame_++;
-    sort_by_morton_key();
     bool need_initial_forces = (iteration_count_ == 0) || (std::all_of(forces_x_.begin(), forces_x_.begin() + particle_count_, [](float f) { return f == 0.0f; }));
     if (need_initial_forces) {
         std::fill(forces_x_.begin(), forces_x_.begin() + particle_count_, 0.0);
