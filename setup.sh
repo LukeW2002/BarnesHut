@@ -12,7 +12,7 @@ for arg in "$@"; do
             echo "Tests disabled via command line option"
             ;;
         --help|-h)
-            echo "Barnes-Hut Performance Build + Auto-Testing"
+            echo "Barnes-Hut Build + Auto-Testing"
             echo "Usage: $0 [options]"
             echo ""
             echo "Options:"
@@ -31,10 +31,10 @@ for arg in "$@"; do
 done
 
 if $BUILD_TESTS; then
-    echo "BARNES-HUT PERFORMANCE BUILD + AUTO-TESTING"
+    echo "BARNES-HUT + AUTO-TESTING"
     echo "==========================================="
 else
-    echo "BARNES-HUT PERFORMANCE BUILD (NO TESTS)"
+    echo "BARNES-HUT BUILD NO TESTS"
     echo "======================================="
 fi
 
@@ -53,7 +53,7 @@ install_dependencies() {
     
     # Check for OpenMP
     if ! brew list libomp &> /dev/null; then
-        echo "Installing OpenMP for maximum parallelization..."
+        echo "Installing OpenMP "
         brew install libomp
         needs_install=true
     else
@@ -63,7 +63,7 @@ install_dependencies() {
     # Only check for GoogleTest if we're building tests
     if $BUILD_TESTS; then
         if ! brew list googletest &> /dev/null; then
-            echo "Installing GoogleTest for comprehensive testing..."
+            echo "Installing GoogleTest"
             brew install googletest
             needs_install=true
         else
@@ -189,11 +189,10 @@ if [[ $build_status -eq 0 ]]; then
     if $BUILD_TESTS; then
         echo "  O3 optimization with debug symbols (RelWithDebInfo)"
     else
-        echo "  Maximum O3 optimization + LTO (Release)"
+        echo "  O3 optimization + LTO (Release)"
         echo "  Fast math and aggressive loop unrolling"
         echo "  Dead code stripping"
     fi
-    echo "  CPU-specific optimizations (-march=native)"
     echo "  OpenMP parallelization"
     echo "  Fast math optimizations"
     echo ""
@@ -240,33 +239,6 @@ if [[ $build_status -eq 0 ]]; then
         echo ""
     fi
     
-    if $BUILD_TESTS; then
-        echo "DEVELOPMENT WORKFLOW:"
-        echo "  1. Add new test files to tests/ directory"
-        echo "  2. Run 'make' to rebuild and auto-test"
-        echo "  3. Use 'make test_quick' for rapid iteration"
-        echo "  4. Use 'make test_comprehensive' for full validation"
-        echo ""
-    else
-        echo "PRODUCTION WORKFLOW:"
-        echo "  1. Edit source files"
-        echo "  2. Run 'make' in $BUILD_DIR/ to rebuild"
-        echo "  3. Use './setup.sh' (with tests) for validation"
-        echo "  4. Use './setup.sh --no-test' for production builds"
-        echo ""
-    fi
-    
-    # Show performance expectations
-    echo "PERFORMANCE EXPECTATIONS:"
-    if ! $BUILD_TESTS; then
-        echo "  Maximum performance optimizations enabled"
-        echo "  Link-time optimization (LTO) active"
-    fi
-    echo "  Force calculation: <1ms for 1000 particles"
-    echo "  Tree building: <5ms for 10k particles"
-    echo "  Multi-threaded when available"
-    echo "  NEON SIMD acceleration on ARM64"
-    echo ""
     
 else
     echo ""

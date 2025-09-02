@@ -5,23 +5,24 @@ project(BarnesHutMrkII)
 enable_language(OBJCXX)
 
 # Standards
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_OBJCXX_STANDARD 17)
+set(CMAKE_OBJCXX_STANDARD 20)
 set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
 
 # AGGRESSIVE OPTIMIZATION FLAGS
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -mcpu=apple-m1 -fno-math-errno -flto -ffast-math -funroll-loops -fno-omit-frame-pointer -Wno-attribute-warning -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize")
+set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -mcpu=apple-m1 -fno-math-errno -flto -ffast-math -fno-omit-frame-pointer -Wno-attribute-warning ")
 set(CMAKE_OBJCXX_FLAGS_RELEASE "-O3 -DNDEBUG -mcpu=apple-m1 -flto -ffast-math -funroll-loops -fno-omit-frame-pointer")
 set(CMAKE_EXE_LINKER_FLAGS_RELEASE "-flto -Wl,-dead_strip")
 
 # Debug with profiling symbols but still some optimization
-set(CMAKE_CXX_FLAGS_DEBUG "-O1 -g -fno-omit-frame-pointer -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize")
-set(CMAKE_OBJCXX_FLAGS_DEBUG "-O1 -g -fno-omit-frame-pointer -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize")
+set(CMAKE_CXX_FLAGS_DEBUG "-O1 -g -fno-omit-frame-pointer ")
+set(CMAKE_OBJCXX_FLAGS_DEBUG "-O1 -g -fno-omit-frame-pointer ")
 
 # RelWithDebInfo - optimized but with debug symbols (best for profiling)
 set(CMAKE_CXX_FLAGS_RELWITHDEBINFO   "-O3 -g -fno-math-errno -ffp-contract=fast ")
 set(CMAKE_OBJCXX_FLAGS_RELWITHDEBINFO "-O3 -g -fno-math-errno -ffp-contract=fast ")
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # Default to Release if not specified
 if(NOT CMAKE_BUILD_TYPE)
@@ -65,6 +66,7 @@ if(APPLE)
   message(STATUS "GLFW include dir: ${GLFW_INCLUDE_DIR}")
 else()
   find_package(PkgConfig REQUIRED)
+  find_package(GTest REQUIRED)
   pkg_check_modules(GLFW3 REQUIRED glfw3)
 endif()
 
@@ -92,6 +94,7 @@ include_directories(
 )
 if(APPLE)
   include_directories(${GLFW_INCLUDE_DIR})
+  include_directories(/opt/homebrew/include)
 else()
   include_directories(${GLFW3_INCLUDE_DIRS})
 endif()
@@ -121,17 +124,11 @@ target_compile_options(${PROJECT_NAME} PRIVATE
     -O3 -g
     -fno-math-errno -ffp-contract=fast
     -fvectorize -fslp-vectorize
-    -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize
-    -fsave-optimization-record
-    -foptimization-record-passes=loop-vectorize,slp-vectorize
   >
   $<$<AND:$<CONFIG:RelWithDebInfo>,$<COMPILE_LANGUAGE:OBJCXX>>:
     -O3 -g
     -fno-math-errno -ffp-contract=fast
     -fvectorize -fslp-vectorize
-    -Rpass=loop-vectorize -Rpass-missed=loop-vectorize -Rpass-analysis=loop-vectorize
-    -fsave-optimization-record
-    -foptimization-record-passes=loop-vectorize,slp-vectorize
   >
 )
 

@@ -78,9 +78,6 @@ void ImGuiInterface::render() {
     // Render all UI components
     render_main_menu_bar();
     
-    if (show_performance_window_) {
-        render_performance_window();
-    }
     
     if (show_particle_controls_) {
         render_particle_controls();
@@ -90,9 +87,6 @@ void ImGuiInterface::render() {
         render_barnes_hut_controls();
     }
     
-    if (show_optimization_controls_) {
-        render_optimization_controls();
-    }
     
     if (show_realistic_presets_) {
         render_realistic_presets_window();
@@ -131,7 +125,7 @@ void ImGuiInterface::render_main_menu_bar() {
             ImGui::MenuItem("Particle Controls", nullptr, &show_particle_controls_);
             ImGui::MenuItem("Barnes-Hut Settings", nullptr, &show_barnes_hut_controls_);
             ImGui::MenuItem("Optimizations", nullptr, &show_optimization_controls_);
-            ImGui::MenuItem("Realistic Galaxies", nullptr, &show_realistic_presets_);
+            ImGui::MenuItem("Galaxies", nullptr, &show_realistic_presets_);
             ImGui::MenuItem("Demo Window", nullptr, &show_demo_window_);
             ImGui::EndMenu();
         }
@@ -159,7 +153,7 @@ void ImGuiInterface::render_main_menu_bar() {
             ImGui::EndMenu();
         }
         
-        if (ImGui::BeginMenu("Realistic Galaxies")) {
+        if (ImGui::BeginMenu("Galaxies")) {
             if (ImGui::MenuItem("🌌 Milky Way Galaxy")) {
                 if (on_create_milky_way) on_create_milky_way();
             }
@@ -199,78 +193,11 @@ void ImGuiInterface::render_main_menu_bar() {
         ImGui::Text("Particles: %zu", performance_stats_.particle_count);
         
         // Force calc time with performance indicator
-        const auto& bh_stats = particle_system_.get_performance_stats();
-        ImGui::SameLine();
-        if (bh_stats.force_calculation_time_ms > 10.0f) {
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Force: %.1fms ⚠️", bh_stats.force_calculation_time_ms);
-        } else if (bh_stats.force_calculation_time_ms > 5.0f) {
-            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "Force: %.1fms", bh_stats.force_calculation_time_ms);
-        } else {
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "Force: %.1fms ✅", bh_stats.force_calculation_time_ms);
-        }
         
         ImGui::EndMainMenuBar();
     }
 }
 
-void ImGuiInterface::render_performance_window() {
-    if (!ImGui::Begin("Performance", &show_performance_window_)) {
-        ImGui::End();
-        return;
-    }
-    
-    ImGui::Text("Frame Time: %.3f ms", performance_stats_.frame_time_ms);
-    ImGui::Text("FPS: %.1f", performance_stats_.fps);
-    ImGui::Text("Particles: %zu", performance_stats_.particle_count);
-    ImGui::Text("Physics Iterations: %zu", performance_stats_.physics_iterations);
-    
-    ImGui::Separator();
-    ImGui::Text("Barnes-Hut Performance");
-    const auto& bh_stats = particle_system_.get_performance_stats();
-    ImGui::Text("Tree Build Time: %.3f ms", bh_stats.tree_build_time_ms);
-    ImGui::Text("Force Calculation: %.3f ms", bh_stats.force_calculation_time_ms);
-    ImGui::Text("Integration Time: %.3f ms", bh_stats.integration_time_ms);
-    ImGui::Text("Tree Nodes: %zu", bh_stats.tree_nodes_created);
-    ImGui::Text("Tree Depth: %zu", bh_stats.tree_depth);
-    ImGui::Text("Direct Calculations: %zu", bh_stats.force_calculations);
-    ImGui::Text("Approximations Used: %zu", bh_stats.approximations_used);
-    ImGui::Text("Efficiency Ratio: %.1f%%", bh_stats.efficiency_ratio * 100.0f);
-    ImGui::Text("Tree Rebuilt: %s", bh_stats.tree_was_rebuilt ? "Yes" : "No");
-    
-    // Performance warning indicators
-    if (bh_stats.avg_tree_depth_per_particle > 100) {
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "⚠️ HIGH TREE DEPTH: %.0f", bh_stats.avg_tree_depth_per_particle);
-        ImGui::Text("   ↳ Try optimizations to fix overlapping particles");
-    }
-    
-    if (bh_stats.efficiency_ratio < 0.5f) {
-        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.0f, 1.0f), "⚠️ LOW EFFICIENCY: %.1f%%", bh_stats.efficiency_ratio * 100.0f);
-        ImGui::Text("   ↳ Try increasing theta value");
-    }
-    
-    if (bh_stats.force_calculation_time_ms > 15.0f && particle_system_.get_particle_count() < 10000) {
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "⚠️ SLOW FORCE CALC: %.1fms", bh_stats.force_calculation_time_ms);
-        ImGui::Text("   ↳ Run comprehensive optimizations (Press O)");
-    }
-    
-    ImGui::Separator();
-    ImGui::Text("Renderer Stats");
-    const auto& render_stats = renderer_.get_stats();
-    ImGui::Text("Particles Rendered: %zu", render_stats.particles_rendered);
-    ImGui::Text("Vertices Processed: %zu", render_stats.vertices_processed);
-    ImGui::Text("Draw Calls: %zu", render_stats.draw_calls);
-    ImGui::Text("Render Time: %.3f ms", render_stats.last_frame_time_ms);
-    
-    // Frame time graph
-    if (!performance_stats_.frame_time_history.empty()) {
-        ImGui::PlotLines("Frame Time (ms)", 
-            performance_stats_.frame_time_history.data(),
-            static_cast<int>(performance_stats_.frame_time_history.size()),
-            0, nullptr, 0.0f, 50.0f, ImVec2(0, 80));
-    }
-    
-    ImGui::End();
-}
 
 void ImGuiInterface::render_particle_controls() {
     if (!ImGui::Begin("Particle Controls", &show_particle_controls_)) {
@@ -393,76 +320,9 @@ void ImGuiInterface::render_barnes_hut_controls() {
     ImGui::End();
 }
 
-void ImGuiInterface::render_optimization_controls() {
-    if (!ImGui::Begin("Optimization Controls", &show_optimization_controls_)) {
-        ImGui::End();
-        return;
-    }
-    
-    ImGui::Text("Performance Optimization Tools");
-    ImGui::Text("Fix slowdowns and improve Barnes-Hut efficiency");
-    
-    ImGui::Separator();
-    
-    // Quick optimization buttons
-    if (ImGui::Button("🚀 Run All Optimizations", ImVec2(-1, 0))) {
-        if (on_run_optimizations) on_run_optimizations();
-    }
-    ImGui::Text("Comprehensive optimization: fixes overlaps, sorts particles,\nfinds optimal theta, compacts tree for cache efficiency");
-    
-    ImGui::Separator();
-    ImGui::Text("Individual Optimizations:");
-    
-    if (ImGui::Button("🔧 Fix Particle Overlaps", ImVec2(-1, 0))) {
-        if (on_fix_overlaps) on_fix_overlaps();
-    }
-    ImGui::Text("Remove overlapping particles that cause deep tree recursion");
-    
-    if (ImGui::Button("📊 Optimize Spatial Layout", ImVec2(-1, 0))) {
-        if (on_optimize_layout) on_optimize_layout();
-    }
-    ImGui::Text("Reorder particles using Morton Z-order for cache locality");
-    
-    if (ImGui::Button("🎯 Find Optimal Theta", ImVec2(-1, 0))) {
-        if (on_find_optimal_theta) on_find_optimal_theta();
-    }
-    ImGui::Text("Test different theta values and pick the fastest");
-    
-    if (ImGui::Button("📚✨ Compact Tree Cache", ImVec2(-1, 0))) {
-        if (on_compact_cache) on_compact_cache();
-    }
-    ImGui::Text("Reorganize tree nodes for better memory access patterns");
-    
-    ImGui::Separator();
-    ImGui::Text("Diagnostic Tools:");
-    
-    if (ImGui::Button("🔍 Diagnose Performance", ImVec2(-1, 0))) {
-        if (on_diagnose_performance) on_diagnose_performance();
-    }
-    ImGui::Text("Analyze performance bottlenecks and get recommendations");
-    
-    // Performance indicator
-    const auto& stats = particle_system_.get_performance_stats();
-    ImGui::Text("Current Performance:");
-    
-    if (stats.force_calculation_time_ms > 15.0f) {
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "🔴 Force Calc: %.1fms (SLOW)", stats.force_calculation_time_ms);
-        ImGui::Text("   ↳ Run optimizations to improve performance");
-    } else if (stats.force_calculation_time_ms > 5.0f) {
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "⚠️ Force Calc: %.1fms (OK)", stats.force_calculation_time_ms);
-    } else {
-        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "✅ Force Calc: %.1fms (GOOD)", stats.force_calculation_time_ms);
-    }
-    
-    ImGui::Text("Tree Depth: %zu (target: <20)", stats.tree_depth);
-    ImGui::Text("Efficiency: %.1f%% approximations", stats.efficiency_ratio * 100.0f);
-    ImGui::Text("Speedup: %.1fx vs brute force", stats.speedup_vs_brute_force);
-    
-    ImGui::End();
-}
 
 void ImGuiInterface::render_realistic_presets_window() {
-    if (!ImGui::Begin("Realistic Galaxy Simulations", &show_realistic_presets_)) {
+    if (!ImGui::Begin("Galaxy Simulations", &show_realistic_presets_)) {
         ImGui::End();
         return;
     }
@@ -476,7 +336,7 @@ void ImGuiInterface::render_realistic_presets_window() {
     if (ImGui::Button("🌌 Milky Way Galaxy", ImVec2(-1, 0))) {
         if (on_create_milky_way) on_create_milky_way();
     }
-    ImGui::Text("Our galaxy with realistic mass distribution:\n"
+    ImGui::Text("Our galaxy with mass distribution:\n"
                "• Central SMBH (Sgr A*): 4.3M solar masses\n"
                "• Stellar disk: ~55B solar masses, exponential profile\n"
                "• Central bulge: ~20B solar masses, Hernquist profile\n"
@@ -501,7 +361,6 @@ void ImGuiInterface::render_realistic_presets_window() {
         if (on_create_tidal_flyby) on_create_tidal_flyby();
     }
     ImGui::Text("Two galaxies on collision course:\n"
-               "• Realistic orbital parameters from simulations\n"
                "• Tidal stripping and stellar streams\n"
                "• Star formation bursts during close passes\n"
                "• Final coalescence into elliptical remnant");
@@ -526,7 +385,7 @@ void ImGuiInterface::render_realistic_presets_window() {
     
     ImGui::Separator();
     ImGui::Text("Simulation Features:");
-    ImGui::BulletText("Realistic mass-to-light ratios");
+    ImGui::BulletText("mass-to-light ratios");
     ImGui::BulletText("Proper velocity dispersions & rotation curves");
     ImGui::BulletText("NFW dark matter halo profiles");
     ImGui::BulletText("Exponential disk & Hernquist bulge components");

@@ -9,7 +9,6 @@
 #include <unordered_map> 
 #include <cmath>          
 #include "Bounds.hpp"
-#include "SortFactory.hpp"
 
 //#define USE_HOME_QUADRANT_FIRST  // Comment out to use Morton order instead
 #define USE_MORTON_ORDER      // Uncomment for Morton traversal
@@ -183,9 +182,10 @@ private:
     #endif
 
     //===========================================================================================
-    //==                                   INJECTION                                           ==
+    //==                                   INJECTION/Bad practice idk man                      ==
     //===========================================================================================
-    using DefaultSort = SortFactory<MortonPolicy, RadixPolicy>;
+    //using DefaultSort = SortFactory<MortonPolicy, RadixPolicy>;
+    friend struct BHAccess;
 
 
     //===========================================================================================
@@ -357,7 +357,6 @@ private:
     // Utility methods
     void prepare_render_data();
     void calculate_bounds();
-    void update_performance_stats();
     void reset_profiling_counters();
     void update_detailed_performance_stats(float total_frame_time);
     TreeNode build_tree_visualization(uint32_t node_index) const;

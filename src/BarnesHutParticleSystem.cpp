@@ -9,6 +9,9 @@
 #include <arm_neon.h>
 #include <numeric>
 #include "Bounds.hpp"
+#include "morton_sort_mix.hpp"
+#include "MortonEncoder.h"
+
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -22,6 +25,13 @@
 #else
     // Fallback: no-op prefetch
     #define __builtin_prefetch(addr, rw, locality) ((void)0)
+#endif
+
+
+#if defined(USE_ENSURE_V1)       // e.g. add -DUSE_ENSURE_V2 in your test/candidate build
+    using ActiveMortonSort = SortEnsureV2;   // only Ensure differs
+#else
+    using ActiveMortonSort = SortV1;         // baseline (your current behavior)
 #endif
 
 
@@ -94,66 +104,6 @@ BarnesHutParticleSystem::~BarnesHutParticleSystem() = default;
 //==                                   MORTON CODE                                         ==
 //===========================================================================================
 
-class MortonCode {
-public:
-    static uint64_t encode_morton_2d(uint32_t x, uint32_t y) {
-        return (expand_bits_2d(x) << 1) | expand_bits_2d(y);
-    }
-    
-
-private:
-    static uint64_t expand_bits_2d(uint32_t v) {
-        uint64_t x = v;
-        x = (x | (x << 16)) & 0x0000FFFF0000FFFF;
-        x = (x | (x << 8))  & 0x00FF00FF00FF00FF;
-        x = (x | (x << 4))  & 0x0F0F0F0F0F0F0F0F;
-        x = (x | (x << 2))  & 0x3333333333333333;
-        x = (x | (x << 1))  & 0x5555555555555555;
-        return x;
-    }
-    
-    static uint32_t compact_bits_2d(uint64_t x) {
-        x &= 0x5555555555555555;
-        x = (x ^ (x >> 1))  & 0x3333333333333333;
-        x = (x ^ (x >> 2))  & 0x0F0F0F0F0F0F0F0F;
-        x = (x ^ (x >> 4))  & 0x00FF00FF00FF00FF;
-        x = (x ^ (x >> 8))  & 0x0000FFFF0000FFFF;
-        x = (x ^ (x >> 16)) & 0x00000000FFFFFFFF;
-        return static_cast<uint32_t>(x);
-    }
-};
-
-class MortonEncoder {
-public:
-    static uint64_t encode_position(float x, float y, const geom::AABBf& b) noexcept {
-        const double rx = std::max<double>(b.max_x - b.min_x, 1e-10);
-        const double ry = std::max<double>(b.max_y - b.min_y, 1e-10);
-        const float  nx = std::clamp<float>(float((x - b.min_x) / rx), 0.0f, 1.0f);
-        const float  ny = std::clamp<float>(float((y - b.min_y) / ry), 0.0f, 1.0f);
-
-        constexpr uint32_t maxc = (1u << 21) - 1;
-        const uint32_t ix = uint32_t(nx * maxc);
-        const uint32_t iy = uint32_t(ny * maxc);
-        return MortonCode::encode_morton_2d(ix, iy);
-    }
-
-    static void encode_morton_keys(const float* xs, const float* ys,
-                                   uint64_t* out_keys, std::size_t n,
-                                   const geom::AABBf& b, bool parallel) noexcept
-    {
-    #ifdef _OPENMP
-        if (parallel && n > 1000) {
-            #pragma omp parallel for
-            for (std::size_t i = 0; i < n; ++i)
-                out_keys[i] = encode_position(xs[i], ys[i], b);
-        } else
-    #endif
-        {
-            for (std::size_t i = 0; i < n; ++i)
-                out_keys[i] = encode_position(xs[i], ys[i], b);
-        }
-    }
-};
 
 
 inline void BarnesHutParticleSystem::radix_sort_indices() {
@@ -250,74 +200,224 @@ inline void BarnesHutParticleSystem::sort_by_morton_key() {
     // INPUTS:  positions_x_; positions_y_; particle_count_
     // OUTPUTS: morton_keys_[0,N) filled; morton_indices_[0,N) sorted by 
     //
-    const std::size_t N = particle_count_;
+    //const std::size_t N = particle_count_;
 
-    ensure_keys_capacity(N);
-    ensure_indices_upto(N);           
-    const geom::AABBf world{bounds_min_x_, bounds_min_y_,bounds_max_x_, bounds_max_y_}; 
+    //ensure_keys_capacity(N);
+    //ensure_indices_upto(N);           
+    //const geom::AABBf world{bounds_min_x_, bounds_min_y_,bounds_max_x_, bounds_max_y_}; 
 
 
-    MortonEncoder::encode_morton_keys(
-        positions_x_.data(),
-        positions_y_.data(),
-        morton_keys_.data(),
-        N,
-        world,
-        config_.enable_threading
-    );
+    //MortonEncoder::encode_morton_keys(
+    //    positions_x_.data(),
+    //    positions_y_.data(),
+    //    morton_keys_.data(),
+    //    N,
+    //    world,
+    //    config_.enable_threading
+    //);
 
-    radix_sort_indices();
+    //radix_sort_indices();
+    sort_by_morton_key_impl<ActiveMortonSort>(*this);
 }
 
 
+
+
+//    int level_shift;
+//    uint64_t mask;
+//};
+//
+//MortonLevelParams calculate_morton_level_params(int depth) const {
+//    // Extract the 2-bit quadrant identifier for this tree level
+//    const int level_shift = MORTON_TOTAL_BITS - 2 * (depth + 1);
+//    const uint64_t mask = 3ULL << level_shift;
+//    return {level_shift, mask};
+//}
+//
+//// Prime function 2: Extract quadrant from Morton key
+//// Contract:
+////   Preconditions: particle_index < morton_indices_.size(), 
+////                  morton_indices_[particle_index] < morton_keys_.size()
+////   Postconditions: returns quadrant in Z-order [0,3]
+////   Invariants: result in range [0,3]
+//int extract_quadrant_z_order(size_t particle_index, const MortonLevelParams& params) const {
+//    const size_t global_index = morton_indices_[particle_index];
+//    const uint64_t morton_key = morton_keys_[global_index];
+//    return static_cast<int>((morton_key & params.mask) >> params.level_shift);
+//}
+//
+//// Prime function 3: Convert Z-order quadrant to canonical child slot
+//// Contract:
+////   Preconditions: z_quadrant in range [0,3]
+////   Postconditions: returns canonical child index [0,3] for [SW, SE, NW, NE]
+////   Invariants: bijective mapping Z-order -> canonical order
+//static int z_order_to_canonical_child(int z_quadrant) {
+//    static constexpr int z_to_child[4] = {0, 2, 1, 3}; // SW, NW, SE, NE -> SW, SE, NW, NE
+//    return z_to_child[z_quadrant];
+//}
+//
+//// Prime function 4: Find end of contiguous quadrant sequence
+//// Contract:
+////   Preconditions: start <= last, expected_quadrant in range [0,3],
+////                  all indices in [start, last] are valid
+////   Postconditions: returns first index where quadrant changes, or last+1 if no change
+////   Invariants: result > start, result <= last+1
+//size_t find_quadrant_sequence_end(size_t start, size_t last, 
+//                                  int expected_quadrant, 
+//                                  const MortonLevelParams& params) const {
+//    size_t end = start + 1;
+//    while (end <= last) {
+//        const int current_quadrant = extract_quadrant_z_order(end, params);
+//        if (current_quadrant != expected_quadrant) {
+//            break;
+//        }
+//        ++end;
+//    }
+//    return end;
+//}
+//
+//// Prime function 5: Initialize empty range array
+//// Contract:
+////   Preconditions: none
+////   Postconditions: all ranges set to {SIZE_MAX, SIZE_MAX} indicating empty
+////   Invariants: array size == 4
+//std::array<std::pair<size_t, size_t>, 4> initialize_empty_ranges() const {
+//    std::array<std::pair<size_t, size_t>, 4> ranges;
+//    for (auto& r : ranges) {
+//        r = {SIZE_MAX, SIZE_MAX};
+//    }
+//    return ranges;
+//}
+//
+//// Prime function 6: Validate range bounds
+//// Contract:
+////   Preconditions: none
+////   Postconditions: returns true if first <= last, false otherwise
+////   Invariants: deterministic based on input values
+//static bool is_valid_range(size_t first, size_t last) {
+//    return first <= last;
+//}
+//
+//// Prime function 7: Set range in result array
+//// Contract:
+////   Preconditions: child_slot in range [0,3], range_start <= range_end
+////   Postconditions: ranges[child_slot] = {range_start, range_end}
+////   Invariants: only modifies ranges[child_slot], other elements unchanged
+//static void set_child_range(std::array<std::pair<size_t, size_t>, 4>& ranges,
+//                           int child_slot, 
+//                           size_t range_start, 
+//                           size_t range_end) {
+//    ranges[child_slot] = {range_start, range_end};
+//}
+//
+//// Prime function 8: Validate split result (debug only)
+//// Contract:
+////   Preconditions: first <= last
+////   Postconditions: returns true if total particles in ranges equals expected count
+////   Invariants: sum of range sizes equals (last - first + 1)
+//#ifndef NDEBUG
+//static bool validate_split_completeness(const std::array<std::pair<size_t, size_t>, 4>& ranges,
+//                                       size_t first, size_t last) {
+//    size_t total = 0;
+//    for (const auto& [range_start, range_end] : ranges) {
+//        if (range_start != SIZE_MAX) {
+//            total += (range_end - range_start + 1);
+//        }
+//    }
+//    return total == (last - first + 1);
+//}
+//#endif
 
 
 std::array<std::pair<size_t, size_t>, 4> BarnesHutParticleSystem::split_morton_range(size_t first, size_t last, int depth) const {
-    /*
-     * 1. Looks at the two bits for that level with the level_shift
-     * 2. Uses mask to bin consecutive indices into 4 contiguous sub-ranges
-     * 3. remaps Z-order nibble into Canonical child order so that 
-     *    the trees children are [SW, SE, NW, NE]
-     * 
-     * INPUT:  first; last; depth
-     * OUTPUT: 4 pairs, {range_first, range_last} into the parents [first, last]
-     * */
-    std::array<std::pair<size_t, size_t>, 4> ranges;
-    for (auto& r : ranges) r = {SIZE_MAX, SIZE_MAX}; 
-    
-    if (first > last) return ranges;
-    
-    const int level_shift = MORTON_TOTAL_BITS - 2 * (depth + 1);
-    const uint64_t mask = 3ULL << level_shift;
-    static constexpr int z_to_child[4] = {0, 2, 1, 3};
-    
-    for (size_t i = first; i <= last; ) {
-        const size_t gi = morton_indices_[i];            
-        const uint64_t ki = morton_keys_[gi];
-        const int z_quad = int((ki & mask) >> level_shift);
-        const int child_slot = z_to_child[z_quad];
-        
-        size_t j = i + 1;
-        while (j <= last) {
-            const size_t gj = morton_indices_[j];         
-            const int z2 = int((morton_keys_[gj] & mask) >> level_shift);
-            if (z2 != z_quad) break;
-            ++j;
-        }
-        ranges[child_slot] = {i, j - 1};
-        i = j;
-    }
-    
-    #ifndef NDEBUG
-    size_t total = 0;
-    for (auto [a, b] : ranges) {
-        if (a != SIZE_MAX) total += (b - a + 1);
-    }
-    assert(total == (last - first + 1));
-    #endif
-    
-    return ranges;
+    return split_morton_range_impl(*this, first, last, depth);
 }
+
+//std::array<std::pair<size_t, size_t>, 4> split_morton_range(size_t first, size_t last, int depth) const {
+//    // Early exit for invalid ranges
+//    if (!is_valid_range(first, last)) {
+//        return initialize_empty_ranges();
+//    }
+//    
+//    // Initialize result
+//    auto ranges = initialize_empty_ranges();
+//    
+//    // Calculate bit extraction parameters for this tree level
+//    const auto params = calculate_morton_level_params(depth);
+//    
+//    // Iterate through particle range, grouping by quadrant
+//    for (size_t i = first; i <= last; ) {
+//        // Determine quadrant for current particle
+//        const int z_quadrant = extract_quadrant_z_order(i, params);
+//        const int child_slot = z_order_to_canonical_child(z_quadrant);
+//        
+//        // Find end of contiguous sequence with same quadrant
+//        const size_t sequence_end = find_quadrant_sequence_end(i, last, z_quadrant, params);
+//        const size_t range_end = sequence_end - 1; // Convert to inclusive end
+//        
+//        // Record this quadrant's range
+//        set_child_range(ranges, child_slot, i, range_end);
+//        
+//        // Move to next quadrant group
+//        i = sequence_end;
+//    }
+//    
+//    // Validate the split (debug builds only)
+//    #ifndef NDEBUG
+//        assert(validate_split_completeness(ranges, first, last));
+//    #endif
+//    
+//    return ranges;
+//}
+
+
+
+//std::array<std::pair<size_t, size_t>, 4> BarnesHutParticleSystem::split_morton_range(size_t first, size_t last, int depth) const {
+//    /*
+//     * 1. Looks at the two bits for that level with the level_shift
+//     * 2. Uses mask to bin consecutive indices into 4 contiguous sub-ranges
+//     * 3. remaps Z-order nibble into Canonical child order so that 
+//     *    the trees children are [SW, SE, NW, NE]
+//     * 
+//     * INPUT:  first; last; depth
+//     * OUTPUT: 4 pairs, {range_first, range_last} into the parents [first, last]
+//     * */
+//    std::array<std::pair<size_t, size_t>, 4> ranges;
+//    for (auto& r : ranges) r = {SIZE_MAX, SIZE_MAX}; 
+//    
+//    if (first > last) return ranges;
+//    
+//    const int level_shift = MORTON_TOTAL_BITS - 2 * (depth + 1);
+//    const uint64_t mask = 3ULL << level_shift;
+//    static constexpr int z_to_child[4] = {0, 2, 1, 3};
+//    
+//    for (size_t i = first; i <= last; ) {
+//        const size_t gi = morton_indices_[i];            
+//        const uint64_t ki = morton_keys_[gi];
+//        const int z_quad = int((ki & mask) >> level_shift);
+//        const int child_slot = z_to_child[z_quad];
+//        
+//        size_t j = i + 1;
+//        while (j <= last) {
+//            const size_t gj = morton_indices_[j];         
+//            const int z2 = int((morton_keys_[gj] & mask) >> level_shift);
+//            if (z2 != z_quad) break;
+//            ++j;
+//        }
+//        ranges[child_slot] = {i, j - 1};
+//        i = j;
+//    }
+//    
+//    #ifndef NDEBUG
+//    size_t total = 0;
+//    for (auto [a, b] : ranges) {
+//        if (a != SIZE_MAX) total += (b - a + 1);
+//    }
+//    assert(total == (last - first + 1));
+//    #endif
+//    
+//    return ranges;
+//}
 
 void BarnesHutParticleSystem::check_for_morton_reordering_need() {
     /*
