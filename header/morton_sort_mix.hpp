@@ -280,6 +280,37 @@ struct ValidateNoOp {
     }
 };
 
+
+// ===================================================================
+// Should Reorder?
+// ===================================================================
+
+
+
+struct worldSize { float width; float height;};
+struct compute_world_sizeV1 {
+  static float run(const Self& /*s*/, BHAccess::BH s){
+   const float width = BHAccess::maxx(s) - BHAccess::minx(s);
+   const float height = BHAccess::maxy(s) - BHAccess::miny(s);
+    return std::max(width, height);
+  };
+};
+
+struct movement_threshold_sqV1 {
+  static float run(float world_size, float movement_fraction){
+    const float threshold = movement_fraction*world_size;
+    return threshold*threshold;
+  }
+}
+
+
+
+
+
+
+
+
+
 using RangeSplitIdentityMap = RangeSplitPrimes<CalcParamsV1, ExtractQuadV1, SeqEndV1, InitRangesV1,
                                                ZToChildIdentity, IsValidV1, SetRangeV1, ValidateV1>;
 

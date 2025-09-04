@@ -11,6 +11,15 @@
 #include "../header/Bounds.hpp"
 #include "../header/MortonEncoder.h"
 #include "../header/morton_sort_mix.hpp"
+#include <fstream>
+
+#include <os/log.h>
+#include <os/signpost.h>
+#include <type_traits>
+
+static os_log_t bh_log = os_log_create("bh.nbody", "bench");
+
+
 
 namespace vptk = VersionedPipelineTestKit;
 using Mix = SortV1;
@@ -738,3 +747,142 @@ TEST(MortonRangeSplit, Plugin_PrimeSwap_ChangesSlotsButCovers) {
     EXPECT_TRUE(any_diff);
 }
 
+static double now_ms() {
+    using clock = std::chrono::steady_clock;
+    return std::chrono::duration<double, std::milli>(clock::now().time_since_epoch()).count();
+}
+
+static double median(std::vector<double> v) {
+    if (v.empty()) return 0.0;
+    std::nth_element(v.begin(), v.begin()+v.size()/2, v.end());
+    return v[v.size()/2];
+}
+
+static std::tuple<double,double,double>
+time_primes(BarnesHutParticleSystem& bh, const geom::AABBf& world, int repeats=3) {
+    std::vector<double> tEnsure, tEncode, tSort;
+    tEnsure.reserve(repeats); tEncode.reserve(repeats); tSort.reserve(repeats);
+
+    for (int r = 0; r < repeats; ++r) {
+        auto t0 = now_ms();
+        {
+            os_signpost_id_t sid = os_signpost_id_generate(bh_log);
+            os_signpost_interval_begin(bh_log, sid, "EnsureIdxV1", "");   // note: "" fmt
+            EnsureIdxV1::run(bh, BHAccess::count(bh));
+            os_signpost_interval_end(bh_log, sid, "EnsureIdxV1", "");
+        }
+        auto t1 = now_ms();
+
+        {
+            os_signpost_id_t sid = os_signpost_id_generate(bh_log);
+            os_signpost_interval_begin(bh_log, sid, "EncodeKeysV1", "");
+            EncodeKeysV1::run(bh, world);
+            os_signpost_interval_end(bh_log, sid, "EncodeKeysV1", "");
+        }
+        auto t2 = now_ms();
+
+        {
+            os_signpost_id_t sid = os_signpost_id_generate(bh_log);
+            os_signpost_interval_begin(bh_log, sid, "RadixSortV1", "");
+            RadixSortV1::run(bh);
+            os_signpost_interval_end(bh_log, sid, "RadixSortV1", "");
+        }
+        auto t3 = now_ms();
+
+        tEnsure.push_back(t1 - t0);
+        tEncode.push_back(t2 - t1);
+        tSort.push_back(t3 - t2);
+    }
+    return { median(tEnsure), median(tEncode), median(tSort) };
+}
+
+
+
+static double time_whole(BarnesHutParticleSystem& bh, int repeats=3) {
+    std::vector<double> ts; ts.reserve(repeats);
+    for (int r = 0; r < repeats; ++r) {
+        auto t0 = now_ms();
+        {
+            os_signpost_id_t sid = os_signpost_id_generate(bh_log);
+            os_signpost_interval_begin(bh_log, sid, "Whole_sort_by_morton_key_impl_Mix", "");
+            sort_by_morton_key_impl<Mix>(bh);
+            os_signpost_interval_end(bh_log, sid, "Whole_sort_by_morton_key_impl_Mix", "");
+        }
+        ts.push_back(now_ms() - t0);
+    }
+    return median(ts);
+}
+
+static void run_morton_bench_sweep() {
+    const char* env = std::getenv("BH_BENCH_CSV");
+    std::string path = env ? env : "morton_bench.csv";
+    std::ofstream out(path);
+    if (!out.is_open()) {
+        ADD_FAILURE() << "Could not open " << path;
+        return;
+    }
+    out << "N,total_ms,ensure_ms,encode_ms,sort_ms,ratio_sum_over_total\n";
+
+    size_t onlyN = 0;
+    if (const char* e = std::getenv("BH_ONLY_N")) {
+        try { onlyN = static_cast<size_t>(std::stoull(e)); } catch (...) {}
+    }
+
+    std::vector<size_t> Ns;
+    for (size_t n = 16; n <= (1u << 18); n *= 2) Ns.push_back(n);
+
+    for (size_t N : Ns) {
+        if (onlyN && N != onlyN) continue;
+
+        // Literal signpost name + literal fmt; N is the dynamic arg
+        os_signpost_id_t sidN = os_signpost_id_generate(bh_log);
+        os_signpost_interval_begin(bh_log, sidN, "SweepN", "N=%{public}zu", N);
+
+        MortonSpec::State stA, stB;
+        auto in = MortonSpec::gen_input_dist(N, /*seed*/42u, MortonSpec::Dist::Uniform);
+        build_bh(stA, in);            // stage-by-stage timing
+        build_bh(stB, in);            // whole wrapper timing
+
+        BHAccess::morton_indices(*stA.bh).resize(N);
+        BHAccess::morton_keys(*stA.bh).resize(N);
+        BHAccess::morton_indices(*stB.bh).resize(N);
+        BHAccess::morton_keys(*stB.bh).resize(N);
+
+        auto [tEnsure, tEncode, tSort] = time_primes(*stA.bh, in.world, /*repeats=*/5);
+        double tWhole = time_whole(*stB.bh, /*repeats=*/5);
+
+        const double sum = tEnsure + tEncode + tSort;
+        const double ratio = (tWhole > 0.0) ? (sum / tWhole) : 0.0;
+
+        if (std::fabs(sum - tWhole) > std::max(0.10 * tWhole, 0.05))
+            std::fprintf(stderr,
+                         "[MortonBench] N=%zu sum(parts)=%.3f whole=%.3f (ratio=%.3f)\n",
+                         N, sum, tWhole, ratio);
+
+        out << N << "," << tWhole << "," << tEnsure << "," << tEncode << ","
+            << tSort << "," << ratio << "\n";
+
+        os_signpost_interval_end(bh_log, sidN, "SweepN", "N=%{public}zu", N);
+    }
+
+    out.close();
+    std::fprintf(stderr, "[MortonBench] Wrote %s\n", path.c_str());
+}
+
+
+// Chatgpt generated hack
+class MortonBenchEnv final : public ::testing::Environment {
+public:
+    void TearDown() override {
+        if (const char* d = std::getenv("BH_BENCH_DISABLE")) {
+            if (std::string(d) == "1") return;
+        }
+        run_morton_bench_sweep();
+    }
+};
+
+namespace {
+struct MortonBenchEnvReg {
+    MortonBenchEnvReg() { ::testing::AddGlobalTestEnvironment(new MortonBenchEnv()); }
+} _mortonBenchEnvReg;
+}

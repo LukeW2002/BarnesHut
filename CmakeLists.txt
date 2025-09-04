@@ -465,6 +465,7 @@ else()
     message(STATUS "Tests disabled or GoogleTest not available")
 endif()
 
+
 # Test workflow targets
 add_custom_target(test_quick
     COMMAND bh_tests --gtest_filter="-*Stress*:-*LargeScale*:-*Performance*" --gtest_brief=1

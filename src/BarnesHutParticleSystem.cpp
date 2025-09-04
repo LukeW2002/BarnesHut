@@ -1,13 +1,8 @@
-#include "BarnesHutParticleSystem.h"
+#include "../header/BarnesHutParticleSystem.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
-#include <unordered_map>
-#include <unordered_set>
-#include <limits>
-#include <random>
 #include <arm_neon.h>
-#include <numeric>
 #include "Bounds.hpp"
 #include "morton_sort_mix.hpp"
 #include "MortonEncoder.h"
@@ -29,9 +24,6 @@
 
 
 #if defined(USE_ENSURE_V1)       // e.g. add -DUSE_ENSURE_V2 in your test/candidate build
-    using ActiveMortonSort = SortEnsureV2;   // only Ensure differs
-#else
-    using ActiveMortonSort = SortV1;         // baseline (your current behavior)
 #endif
 
 
@@ -165,292 +157,116 @@ inline void BarnesHutParticleSystem::radix_sort_indices() {
 }
 
 
-inline void BarnesHutParticleSystem::ensure_indices_upto(size_t N) {
-    /*
-     * Maintain an idenity index array without rewriting the entire prefix every frame
-     * Input: N
-     * */
-    if (indices_filled_ < N) {
-        std::iota(morton_indices_.begin() + indices_filled_,
-                  morton_indices_.begin() + N,
-                  static_cast<size_t>(indices_filled_));
-        indices_filled_ = N;
-    }
-    else { std::iota(morton_indices_.begin(), morton_indices_.begin()+N, 0); indices_filled_ = N; }
-}
-
-
-inline void fill_iota(std::uint32_t* indices, std::size_t n) noexcept {
-    //Fill indices with 0..n-1
-    for (std::size_t i = 0; i < n; ++i) indices[i] = static_cast<std::uint32_t>(i);
-}
-
-inline void BarnesHutParticleSystem::ensure_keys_capacity(std::size_t n) {
-
-    if (morton_keys_.size() < n) morton_keys_.resize(max_particles_);
-}
-
-
 inline void BarnesHutParticleSystem::sort_by_morton_key() {
-    // 1. Ensures Morton_keys_ has capacity pre-sized to max_particles_
-    // 2. Waterline fills morton_indices_ with [0,(N-1)]  
-    // 3. Computes One Key per Particle with the MortonEncoder::encode_position
-    // 4. Calls Radix Sort
-    //
-    // INPUTS:  positions_x_; positions_y_; particle_count_
-    // OUTPUTS: morton_keys_[0,N) filled; morton_indices_[0,N) sorted by 
-    //
-    //const std::size_t N = particle_count_;
-
-    //ensure_keys_capacity(N);
-    //ensure_indices_upto(N);           
-    //const geom::AABBf world{bounds_min_x_, bounds_min_y_,bounds_max_x_, bounds_max_y_}; 
-
-
-    //MortonEncoder::encode_morton_keys(
-    //    positions_x_.data(),
-    //    positions_y_.data(),
-    //    morton_keys_.data(),
-    //    N,
-    //    world,
-    //    config_.enable_threading
-    //);
-
-    //radix_sort_indices();
-    sort_by_morton_key_impl<ActiveMortonSort>(*this);
+    sort_by_morton_key_impl<SortV1>(*this);
 }
-
-
-
-
-//    int level_shift;
-//    uint64_t mask;
-//};
-//
-//MortonLevelParams calculate_morton_level_params(int depth) const {
-//    // Extract the 2-bit quadrant identifier for this tree level
-//    const int level_shift = MORTON_TOTAL_BITS - 2 * (depth + 1);
-//    const uint64_t mask = 3ULL << level_shift;
-//    return {level_shift, mask};
-//}
-//
-//// Prime function 2: Extract quadrant from Morton key
-//// Contract:
-////   Preconditions: particle_index < morton_indices_.size(), 
-////                  morton_indices_[particle_index] < morton_keys_.size()
-////   Postconditions: returns quadrant in Z-order [0,3]
-////   Invariants: result in range [0,3]
-//int extract_quadrant_z_order(size_t particle_index, const MortonLevelParams& params) const {
-//    const size_t global_index = morton_indices_[particle_index];
-//    const uint64_t morton_key = morton_keys_[global_index];
-//    return static_cast<int>((morton_key & params.mask) >> params.level_shift);
-//}
-//
-//// Prime function 3: Convert Z-order quadrant to canonical child slot
-//// Contract:
-////   Preconditions: z_quadrant in range [0,3]
-////   Postconditions: returns canonical child index [0,3] for [SW, SE, NW, NE]
-////   Invariants: bijective mapping Z-order -> canonical order
-//static int z_order_to_canonical_child(int z_quadrant) {
-//    static constexpr int z_to_child[4] = {0, 2, 1, 3}; // SW, NW, SE, NE -> SW, SE, NW, NE
-//    return z_to_child[z_quadrant];
-//}
-//
-//// Prime function 4: Find end of contiguous quadrant sequence
-//// Contract:
-////   Preconditions: start <= last, expected_quadrant in range [0,3],
-////                  all indices in [start, last] are valid
-////   Postconditions: returns first index where quadrant changes, or last+1 if no change
-////   Invariants: result > start, result <= last+1
-//size_t find_quadrant_sequence_end(size_t start, size_t last, 
-//                                  int expected_quadrant, 
-//                                  const MortonLevelParams& params) const {
-//    size_t end = start + 1;
-//    while (end <= last) {
-//        const int current_quadrant = extract_quadrant_z_order(end, params);
-//        if (current_quadrant != expected_quadrant) {
-//            break;
-//        }
-//        ++end;
-//    }
-//    return end;
-//}
-//
-//// Prime function 5: Initialize empty range array
-//// Contract:
-////   Preconditions: none
-////   Postconditions: all ranges set to {SIZE_MAX, SIZE_MAX} indicating empty
-////   Invariants: array size == 4
-//std::array<std::pair<size_t, size_t>, 4> initialize_empty_ranges() const {
-//    std::array<std::pair<size_t, size_t>, 4> ranges;
-//    for (auto& r : ranges) {
-//        r = {SIZE_MAX, SIZE_MAX};
-//    }
-//    return ranges;
-//}
-//
-//// Prime function 6: Validate range bounds
-//// Contract:
-////   Preconditions: none
-////   Postconditions: returns true if first <= last, false otherwise
-////   Invariants: deterministic based on input values
-//static bool is_valid_range(size_t first, size_t last) {
-//    return first <= last;
-//}
-//
-//// Prime function 7: Set range in result array
-//// Contract:
-////   Preconditions: child_slot in range [0,3], range_start <= range_end
-////   Postconditions: ranges[child_slot] = {range_start, range_end}
-////   Invariants: only modifies ranges[child_slot], other elements unchanged
-//static void set_child_range(std::array<std::pair<size_t, size_t>, 4>& ranges,
-//                           int child_slot, 
-//                           size_t range_start, 
-//                           size_t range_end) {
-//    ranges[child_slot] = {range_start, range_end};
-//}
-//
-//// Prime function 8: Validate split result (debug only)
-//// Contract:
-////   Preconditions: first <= last
-////   Postconditions: returns true if total particles in ranges equals expected count
-////   Invariants: sum of range sizes equals (last - first + 1)
-//#ifndef NDEBUG
-//static bool validate_split_completeness(const std::array<std::pair<size_t, size_t>, 4>& ranges,
-//                                       size_t first, size_t last) {
-//    size_t total = 0;
-//    for (const auto& [range_start, range_end] : ranges) {
-//        if (range_start != SIZE_MAX) {
-//            total += (range_end - range_start + 1);
-//        }
-//    }
-//    return total == (last - first + 1);
-//}
-//#endif
 
 
 std::array<std::pair<size_t, size_t>, 4> BarnesHutParticleSystem::split_morton_range(size_t first, size_t last, int depth) const {
     return split_morton_range_impl(*this, first, last, depth);
 }
 
-//std::array<std::pair<size_t, size_t>, 4> split_morton_range(size_t first, size_t last, int depth) const {
-//    // Early exit for invalid ranges
-//    if (!is_valid_range(first, last)) {
-//        return initialize_empty_ranges();
-//    }
-//    
-//    // Initialize result
-//    auto ranges = initialize_empty_ranges();
-//    
-//    // Calculate bit extraction parameters for this tree level
-//    const auto params = calculate_morton_level_params(depth);
-//    
-//    // Iterate through particle range, grouping by quadrant
-//    for (size_t i = first; i <= last; ) {
-//        // Determine quadrant for current particle
-//        const int z_quadrant = extract_quadrant_z_order(i, params);
-//        const int child_slot = z_order_to_canonical_child(z_quadrant);
-//        
-//        // Find end of contiguous sequence with same quadrant
-//        const size_t sequence_end = find_quadrant_sequence_end(i, last, z_quadrant, params);
-//        const size_t range_end = sequence_end - 1; // Convert to inclusive end
-//        
-//        // Record this quadrant's range
-//        set_child_range(ranges, child_slot, i, range_end);
-//        
-//        // Move to next quadrant group
-//        i = sequence_end;
-//    }
-//    
-//    // Validate the split (debug builds only)
-//    #ifndef NDEBUG
-//        assert(validate_split_completeness(ranges, first, last));
-//    #endif
-//    
-//    return ranges;
-//}
+namespace bh::morton {
 
+// 1. Compute the world size (largest dimension of bounding box)
+inline float compute_world_size(float min_x, float min_y, 
+                               float max_x, float max_y) noexcept {
+    const float width = max_x - min_x;
+    const float height = max_y - min_y;
+    return std::max(width, height);
+}
 
+// 2. Calculate squared movement threshold
+inline float movement_threshold_sq(float world_size, float movement_fraction) noexcept {
+    const float threshold = movement_fraction * world_size;
+    return threshold * threshold;
+}
 
-//std::array<std::pair<size_t, size_t>, 4> BarnesHutParticleSystem::split_morton_range(size_t first, size_t last, int depth) const {
-//    /*
-//     * 1. Looks at the two bits for that level with the level_shift
-//     * 2. Uses mask to bin consecutive indices into 4 contiguous sub-ranges
-//     * 3. remaps Z-order nibble into Canonical child order so that 
-//     *    the trees children are [SW, SE, NW, NE]
-//     * 
-//     * INPUT:  first; last; depth
-//     * OUTPUT: 4 pairs, {range_first, range_last} into the parents [first, last]
-//     * */
-//    std::array<std::pair<size_t, size_t>, 4> ranges;
-//    for (auto& r : ranges) r = {SIZE_MAX, SIZE_MAX}; 
-//    
-//    if (first > last) return ranges;
-//    
-//    const int level_shift = MORTON_TOTAL_BITS - 2 * (depth + 1);
-//    const uint64_t mask = 3ULL << level_shift;
-//    static constexpr int z_to_child[4] = {0, 2, 1, 3};
-//    
-//    for (size_t i = first; i <= last; ) {
-//        const size_t gi = morton_indices_[i];            
-//        const uint64_t ki = morton_keys_[gi];
-//        const int z_quad = int((ki & mask) >> level_shift);
-//        const int child_slot = z_to_child[z_quad];
-//        
-//        size_t j = i + 1;
-//        while (j <= last) {
-//            const size_t gj = morton_indices_[j];         
-//            const int z2 = int((morton_keys_[gj] & mask) >> level_shift);
-//            if (z2 != z_quad) break;
-//            ++j;
-//        }
-//        ranges[child_slot] = {i, j - 1};
-//        i = j;
-//    }
-//    
-//    #ifndef NDEBUG
-//    size_t total = 0;
-//    for (auto [a, b] : ranges) {
-//        if (a != SIZE_MAX) total += (b - a + 1);
-//    }
-//    assert(total == (last - first + 1));
-//    #endif
-//    
-//    return ranges;
-//}
+// 3. Choose sample size (capped at max_samples)
+inline size_t choose_sample_size(size_t particle_count, size_t max_samples) noexcept {
+    return std::min(particle_count, max_samples);
+}
 
-void BarnesHutParticleSystem::check_for_morton_reordering_need() {
-    /*
-     *    Checks if the morton code needs reordering based on how far the particles have moved
-     * 1. first calculates threshold based on the roots bounding bod
-     * 2. then checks a sampled amount of pixels on if its moved too far away calculated threshold via distance
-     *
-     * INPUT: particle_count_, bounds_min_x/y, bounds_max_min_x/y position_x/y_, previous_positions  
-     * OUTPUT: Non
-     * */
-    if (particle_count_ < 100) return;  
+// 4. Deterministic stratified sampling index with zero-division guard
+inline size_t index_for_sample(size_t sample_index, size_t sample_size, size_t particle_count) noexcept {
+    return sample_size ? (sample_index * particle_count) / sample_size : 0;
+}
+
+// 5. Check if a single particle has moved beyond threshold
+inline bool particle_moved(size_t idx,
+                          const std::vector<float>& pos_x,
+                          const std::vector<float>& pos_y, 
+                          const std::vector<Vector2d>& previous_positions,
+                          float threshold_sq) noexcept {
+    if (idx >= previous_positions.size()) return false;
     
-    const size_t sample_size = std::min(particle_count_, size_t(50));
-    const double movement_threshold = 0.1;
-    
-    double world_size = std::max(bounds_max_x_ - bounds_min_x_, bounds_max_y_ - bounds_min_y_);
-    double threshold_distance = movement_threshold * world_size;
-    double threshold_distance_sq = threshold_distance * threshold_distance;
-    
-    size_t moved_particles = 0;
-    
-    for (size_t i = 0; i < sample_size; ++i) {
-        size_t idx = (i * particle_count_) / sample_size;
-        if (idx < previous_positions_.size()) {
-            double dx = positions_x_[idx] - previous_positions_[idx].x();
-            double dy = positions_y_[idx] - previous_positions_[idx].y();
-            if (dx*dx + dy*dy > threshold_distance_sq) {
-                moved_particles++;
-            }
+    const float dx = pos_x[idx] - static_cast<float>(previous_positions[idx].x());
+    const float dy = pos_y[idx] - static_cast<float>(previous_positions[idx].y());
+    return (dx * dx + dy * dy) > threshold_sq;
+}
+
+// 6. Count how many sampled particles have moved
+inline size_t count_moved_particles(const std::vector<size_t>& sample_indices,
+                                   const std::vector<float>& pos_x,
+                                   const std::vector<float>& pos_y,
+                                   const std::vector<Vector2d>& previous_positions,
+                                   float threshold_sq) noexcept {
+    size_t moved_count = 0;
+    for (size_t idx : sample_indices) {
+        if (particle_moved(idx, pos_x, pos_y, previous_positions, threshold_sq)) {
+            moved_count++;
         }
     }
+    return moved_count;
+}
+
+// 7. Decide whether reordering is needed based on movement ratio (with ceiling semantics)
+inline bool should_reorder(size_t moved_count, size_t sample_size, float ratio) noexcept {
+    if (sample_size == 0) return false;
+    const size_t threshold = static_cast<size_t>(std::ceil(ratio * sample_size));
+    return moved_count >= threshold;
+}
+
+// 8. Count moved particles without intermediate allocation
+inline size_t count_moved_particles_direct(size_t sample_size, size_t particle_count,
+                                          const std::vector<float>& pos_x,
+                                          const std::vector<float>& pos_y,
+                                          const std::vector<Vector2d>& previous_positions,
+                                          float threshold_sq) noexcept {
+    size_t moved_count = 0;
+    for (size_t i = 0; i < sample_size; ++i) {
+        const size_t idx = index_for_sample(i, sample_size, particle_count);
+        if (particle_moved(idx, pos_x, pos_y, previous_positions, threshold_sq)) {
+            moved_count++;
+        }
+    }
+    return moved_count;
+}
+
+} // namespace bh::morton
+
+void BarnesHutParticleSystem::check_for_morton_reordering_need() {
+    if (particle_count_ < 100) return;
     
-    if (moved_particles > sample_size * 0.3) {
+    using namespace bh::morton;
+    
+    // Step 1: Calculate world dimensions and movement threshold
+    const float world_size = compute_world_size(static_cast<float>(bounds_min_x_), 
+                                               static_cast<float>(bounds_min_y_),
+                                               static_cast<float>(bounds_max_x_), 
+                                               static_cast<float>(bounds_max_y_));
+    const float threshold_sq = movement_threshold_sq(world_size, 0.1f);
+    
+    // Step 2: Determine sample size
+    const size_t sample_size = choose_sample_size(particle_count_, 50);
+    
+    // Step 3: Count moved particles directly (no intermediate allocation)
+    const size_t moved_count = count_moved_particles_direct(sample_size, particle_count_,
+                                                          positions_x_, positions_y_,
+                                                          previous_positions_, threshold_sq);
+    
+    // Step 4: Decide if reordering is needed (with ceiling semantics)
+    if (should_reorder(moved_count, sample_size, 0.3f)) {
         particles_need_reordering_ = true;
     }
 }
@@ -477,7 +293,6 @@ void BarnesHutParticleSystem::build_tree() {
      *  6) Bottom-up mass properties: center-of-mass (COM) and bounding radius for all nodes.
      *  7) Snapshot previous positions and mark tree valid.
      */
-    auto total_start = std::chrono::high_resolution_clock::now();
 
     // ── 1: Reset state (extract: reset_tree_state_for_build(N)) ───────────────
     // Inputs (reads): particle_count_
@@ -993,7 +808,6 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
     const float eps2 = EPS_SQ;
     const float theta2 = config_.theta_squared;
 
-    // new: use root com as origin to center all coordinates
     const float ox = tree_nodes_[root_node_index_].com_x;
     const float oy = tree_nodes_[root_node_index_].com_y;
     const float px_c = px - ox;
@@ -1069,7 +883,6 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
                     __builtin_prefetch(&leaf_mass_[off], 0, 3);
                     
                     float fx_leaf = 0.0f, fy_leaf = 0.0f;
-                    // pass centered coordinates to neon
                     process_leaf_forces_neon_centered(node, i_local, px_c, py_c, gi, 
                                                     fx_leaf, fy_leaf, ox, oy,
                                                     &leaf_pos_x_[off], 
@@ -1078,7 +891,6 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
                     fx_acc += fx_leaf * G_GALACTIC;
                     fy_acc += fy_leaf * G_GALACTIC;
                 } else {
-                    // scalar path with centered coordinates
                     for (uint32_t t = 0; t < cnt; ++t) {
                         if (unlikely(static_cast<int>(t) == i_local)) continue;
                         
@@ -1108,7 +920,6 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
         const float bound_r_sq = node.bound_r * node.bound_r;
         
         if (likely(bound_r_sq < theta2 * dist_sq)) {
-            // batch for neon processing
             ax[acc_n] = dx;
             ay[acc_n] = dy;
             am[acc_n] = gi * node.total_mass;
@@ -1151,17 +962,12 @@ inline bool BarnesHutParticleSystem::calculate_force_on_particle_iterative(
     }
 
     flush_internal_batch();
-    fx_acc += acc_fx_scalar;
-    fy_acc += acc_fy_scalar;
+    //fx_acc += acc_fx_scalar;
+    //fy_acc += acc_fy_scalar;
 
 #if defined(__aarch64__)
     fx_acc += vaddvq_f32(acc_fx_vec);
     fy_acc += vaddvq_f32(acc_fy_vec);
-#else
-    float32x2_t sum_fx = vadd_f32(vget_low_f32(acc_fx_vec), vget_high_f32(acc_fx_vec));
-    float32x2_t sum_fy = vadd_f32(vget_low_f32(acc_fy_vec), vget_high_f32(acc_fy_vec));
-    fx_acc += vget_lane_f32(sum_fx, 0) + vget_lane_f32(sum_fx, 1);
-    fy_acc += vget_lane_f32(sum_fy, 0) + vget_lane_f32(sum_fy, 1);
 #endif
 
     fx += fx_acc;

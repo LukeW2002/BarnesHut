@@ -1,0 +1,144 @@
+cmake_minimum_required(VERSION 3.20)
+project(BarnesHutMrkII LANGUAGES CXX OBJCXX)
+
+# Tooling: make clangd happy
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Standards
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_OBJCXX_STANDARD 20)
+set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+
+option(ENABLE_OPENMP "Enable OpenMP parallelism" ON)
+option(BUILD_TESTS "Build tests" ON)
+
+# ── Dependencies ────────────────────────────────────────────────────────────────
+# Eigen (header-only, imported target adds include dirs to compile_commands.json)
+find_package(Eigen3 REQUIRED NO_MODULE)
+
+# GLFW: prefer config package (Homebrew), otherwise a tiny fallback
+find_package(glfw3 CONFIG QUIET)
+if(NOT glfw3_FOUND)
+  if(APPLE)
+    find_path(GLFW_INCLUDE_DIR NAMES GLFW/glfw3.h HINTS /opt/homebrew /usr/local PATH_SUFFIXES include)
+    find_library(GLFW_LIBRARY NAMES glfw glfw3 HINTS /opt/homebrew /usr/local PATH_SUFFIXES lib)
+    if(NOT GLFW_INCLUDE_DIR OR NOT GLFW_LIBRARY)
+      message(FATAL_ERROR "GLFW not found. Try: brew install glfw")
+    endif()
+  else()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(GLFW3 REQUIRED glfw3)
+  endif()
+endif()
+
+# Optional OpenMP (use imported target when available)
+if(ENABLE_OPENMP)
+  find_package(OpenMP QUIET)
+endif()
+
+# Metal / Apple frameworks (macOS)
+if(APPLE)
+  enable_language(OBJCXX)
+  find_library(METAL_FRAMEWORK Metal REQUIRED)
+  find_library(METALKIT_FRAMEWORK MetalKit REQUIRED)
+  find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+  find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
+  find_library(QUARTZ_CORE_FRAMEWORK QuartzCore REQUIRED)
+endif()
+
+# ImGui (vendored)
+set(IMGUI_DIR "${CMAKE_SOURCE_DIR}/libs/imgui")
+set(IMGUI_SOURCES
+  ${IMGUI_DIR}/imgui.cpp
+  ${IMGUI_DIR}/imgui_demo.cpp
+  ${IMGUI_DIR}/imgui_draw.cpp
+  ${IMGUI_DIR}/imgui_tables.cpp
+  ${IMGUI_DIR}/imgui_widgets.cpp
+  ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+  ${IMGUI_DIR}/backends/imgui_impl_metal.mm
+)
+
+# ── Targets ────────────────────────────────────────────────────────────────────
+# Core library
+add_library(particle_system_lib STATIC
+  src/BarnesHutParticleSystem.cpp
+  src/GalaxyFactory.cpp
+)
+target_include_directories(particle_system_lib PUBLIC header)
+target_link_libraries(particle_system_lib PUBLIC Eigen3::Eigen)
+target_compile_features(particle_system_lib PUBLIC cxx_std_20)
+if(ENABLE_OPENMP AND OpenMP_CXX_FOUND)
+  target_link_libraries(particle_system_lib PUBLIC OpenMP::OpenMP_CXX)
+  target_compile_definitions(particle_system_lib PRIVATE OPENMP_ENABLED)
+endif()
+
+# App
+add_executable(${PROJECT_NAME}
+  src/main.mm
+  src/MetalRenderer.mm
+  src/ImGuiInterface.mm
+  ${IMGUI_SOURCES}
+)
+target_include_directories(${PROJECT_NAME} PRIVATE
+  header
+  ${IMGUI_DIR}
+  ${IMGUI_DIR}/backends
+  $<$<BOOL:${GLFW_INCLUDE_DIR}>:${GLFW_INCLUDE_DIR}>
+  $<$<BOOL:${GLFW3_INCLUDE_DIRS}>:${GLFW3_INCLUDE_DIRS}>
+)
+target_link_libraries(${PROJECT_NAME}
+  PRIVATE
+    particle_system_lib
+    Eigen3::Eigen
+    $<$<TARGET_EXISTS:glfw>:glfw>
+    $<$<NOT:$<TARGET_EXISTS:glfw>>:${GLFW_LIBRARY}>
+    $<$<NOT:$<TARGET_EXISTS:glfw>>:${GLFW3_LIBRARIES}>
+    $<$<BOOL:${APPLE}>:${METAL_FRAMEWORK} ${METALKIT_FRAMEWORK} ${FOUNDATION_FRAMEWORK} ${COCOA_FRAMEWORK} ${QUARTZ_CORE_FRAMEWORK}>
+)
+# ARC for ObjC++ sources
+set_source_files_properties(src/main.mm src/MetalRenderer.mm ${IMGUI_DIR}/backends/imgui_impl_metal.mm
+  PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+
+# ── Tests ──────────────────────────────────────────────────────────────────────
+option(BUILD_TESTS "Build tests" ON)
+option(RUN_TESTS_AFTER_BUILD "Run tests immediately after a successful build" ON)
+
+if(BUILD_TESTS)
+  enable_testing()
+
+  # Prefer modern config package (Homebrew), fall back to FindGTest
+  find_package(GTest CONFIG QUIET)
+  if(NOT GTest_FOUND)
+    find_package(GTest REQUIRED) # provides either imported targets or legacy vars
+  endif()
+
+  # Auto-discover all test sources (.cpp and .mm)
+  file(GLOB_RECURSE TEST_SOURCES tests/*.cpp tests/*.mm)
+
+  if(TEST_SOURCES)
+    add_executable(bh_tests ${TEST_SOURCES})
+    target_link_libraries(bh_tests PRIVATE
+      particle_system_lib
+      $<$<TARGET_EXISTS:GTest::gtest>:GTest::gtest>
+      $<$<TARGET_EXISTS:GTest::gtest_main>:GTest::gtest_main>
+      $<$<NOT:$<TARGET_EXISTS:GTest::gtest>>:${GTEST_LIBRARY}>
+      $<$<NOT:$<TARGET_EXISTS:GTest::gtest_main>>:${GTEST_MAIN_LIBRARY}>
+    )
+    target_include_directories(bh_tests PRIVATE header tests)
+
+    include(GoogleTest)
+    gtest_discover_tests(bh_tests)
+
+    # Run tests right after building the test binary, and build it before the app
+    if(RUN_TESTS_AFTER_BUILD)
+      add_custom_command(TARGET bh_tests POST_BUILD
+        COMMAND $<TARGET_FILE:bh_tests> --gtest_color=yes --gtest_brief=1
+        COMMENT "Auto-running tests after build"
+        VERBATIM
+      )
+      add_dependencies(${PROJECT_NAME} bh_tests)
+    endif()
+  endif()
+endif()
+
